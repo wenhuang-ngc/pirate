@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -9,9 +10,19 @@
 
 #include "greatest.h"
 
+typedef void (*sighandler_t)(int);
+
 GREATEST_MAIN_DEFS();
 
 static char *devicepath;
+
+static int sigpipe_flag;
+
+static void handle_sigpipe(int sig) {
+  (void)sig;
+
+  sigpipe_flag++;
+}
 
 TEST open_invalid() {
   int rv;
@@ -125,6 +136,76 @@ TEST gaps_valid_write_read() {
   return gaps_valid_ops(O_WRONLY, O_RDONLY, 5678);
 }
 
+TEST gaps_one_sided_read() {
+  struct timespec pause;
+  int rv, buffer, fd;
+
+  pause.tv_sec = 0;
+  pause.tv_nsec = (long)1e8;
+
+  pid_t ch_pid = fork();
+  switch (ch_pid) {
+  case -1: // Error
+    perror("fork failed");
+    FAIL();
+  case 0: // Child
+    fd = open(devicepath, O_WRONLY);
+    ASSERT(fd > 0);
+    rv = close(fd);
+    ASSERT_EQ_FMT(0, rv, "%d");
+    exit(0);
+    break;
+  default: // Parent
+    fd = open(devicepath, O_RDONLY);
+    ASSERT(fd > 0);
+    nanosleep(&pause, NULL);
+    rv = read(fd, &buffer, sizeof(int));
+    ASSERT_EQ_FMT(0, rv, "%d");
+    waitpid(ch_pid, NULL, 0);
+    rv = close(fd);
+    ASSERT_EQ_FMT(0, rv, "%d");
+  }
+  PASS();
+}
+
+TEST gaps_one_sided_write() {
+  struct timespec pause;
+  sighandler_t prev_handler;
+  int rv, buffer, fd;
+
+  pause.tv_sec = 0;
+  pause.tv_nsec = (long)1e8;
+
+  pid_t ch_pid = fork();
+  switch (ch_pid) {
+  case -1: // Error
+    perror("fork failed");
+    FAIL();
+  case 0: // Child
+    fd = open(devicepath, O_RDONLY);
+    ASSERT(fd > 0);
+    rv = close(fd);
+    ASSERT_EQ_FMT(0, rv, "%d");
+    exit(0);
+    break;
+  default: // Parent
+    fd = open(devicepath, O_WRONLY);
+    ASSERT(fd > 0);
+    nanosleep(&pause, NULL);
+    sigpipe_flag = 0;
+    prev_handler = signal(SIGPIPE, handle_sigpipe);
+    rv = write(fd, &buffer, sizeof(int));
+    signal(SIGPIPE, prev_handler);
+    ASSERT_EQ_FMT(-1, rv, "%d");
+    ASSERT_EQ_FMT(EPIPE, errno, "%d");
+    ASSERT_EQ_FMT(1, sigpipe_flag, "%d");
+    waitpid(ch_pid, NULL, 0);
+    rv = close(fd);
+    ASSERT_EQ_FMT(0, rv, "%d");
+  }
+  PASS();
+}
+
 SUITE(gaps_open) {
   struct stat statbuf;
   stat(devicepath, &statbuf);
@@ -141,6 +222,11 @@ SUITE(gaps_read_write) {
   RUN_TEST(gaps_valid_write_read);
 }
 
+SUITE(gaps_one_sided) {
+  RUN_TEST(gaps_one_sided_read);
+  RUN_TEST(gaps_one_sided_write);
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
     printf("usage: cusegaps.test [device path]\n");
@@ -152,6 +238,7 @@ int main(int argc, char **argv) {
 
   RUN_SUITE(gaps_open);
   RUN_SUITE(gaps_read_write);
+  RUN_SUITE(gaps_one_sided);
 
   GREATEST_MAIN_END();
 }
