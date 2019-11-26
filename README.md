@@ -10,7 +10,8 @@ appropriate CPU, implementing channel send and receive calls, and resource
 cleanup / data wipe on termination.
 
 libpirate currently implements GAPS channels using Linux named pipes,
-a character device driver, or shared memory.
+a character device driver, Unix domain sockets, or shared memory.
+Benchmarks are available on the [wiki](https://github.com/GaloisInc/pirate-demos/wiki/libpirate-benchmarks).
 
 ### simple_demo
 
@@ -35,3 +36,11 @@ http://man7.org/linux/man-pages/man7/pipe.7.html.
 Implemented using the CUSE (character device in userspace) functionality
 that is available in the FUSE library (https://github.com/libfuse/libfuse).
 Communication is implemented using either TCP/IP sockets or named pipes.
+
+### process-vm-device
+
+This kernel module creates a character device. The character device allows
+one reader process and one writer process to communicate using the
+[process_vm](https://linux.die.net/man/2/process_vm_writev) interface.
+The data moves directly between the address spaces of the two processes,
+without passing through kernel space.

@@ -1,17 +1,36 @@
+/*
+ * This work was authored by Two Six Labs, LLC and is sponsored by a subcontract
+ * agreement with Galois, Inc.  This material is based upon work supported by
+ * the Defense Advanced Research Projects Agency (DARPA) under Contract No.
+ * HR0011-19-C-0103.
+ *
+ * The Government has unlimited rights to use, modify, reproduce, release,
+ * perform, display, or disclose computer software or computer software
+ * documentation marked with this legend. Any reproduction of technical data,
+ * computer software, or portions thereof marked with this legend must also
+ * reproduce this marking.
+ *
+ * Copyright 2019 Two Six Labs, LLC.  All rights reserved.
+ */
+
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include "primitives.h"
 #include "shmem_interface.h"
+#include "unix_socket.h"
 
-static pirate_channel_t readers[PIRATE_NUM_CHANNELS] = {{0, PIPE, NULL, 0, NULL}};
-static pirate_channel_t writers[PIRATE_NUM_CHANNELS] = {{0, PIPE, NULL, 0, NULL}};
+static pirate_channel_t readers[PIRATE_NUM_CHANNELS] = {
+    {0, PIPE, NULL, 0, NULL}};
+static pirate_channel_t writers[PIRATE_NUM_CHANNELS] = {
+    {0, PIPE, NULL, 0, NULL}};
 
 // gaps descriptors must be opened from smallest to largest
 int pirate_open(int gd, int flags) {
@@ -60,6 +79,13 @@ int pirate_open(int gd, int flags) {
     }
     strncpy(pathname, channels[gd].pathname, PIRATE_LEN_NAME);
     break;
+  case UNIX_SOCKET:
+    fd = pirate_unix_socket_open(gd, flags, channels[gd].buffer_size);
+    if (fd < 0) {
+      return -1;
+    }
+    channels[gd].fd = fd;
+    return gd;
   case SHMEM:
     return pirate_shmem_open(gd, flags, channels);
   case INVALID:
@@ -210,6 +236,64 @@ int pirate_fcntl1_int(int gd, int flags, int cmd, int arg) {
   return fcntl(fd, cmd, arg);
 }
 
+int pirate_ioctl0(int gd, int flags, long cmd) {
+  pirate_channel_t *channels;
+  int fd;
+
+  if (gd < 0 || gd >= PIRATE_NUM_CHANNELS) {
+    errno = EBADF;
+    return -1;
+  }
+
+  if ((flags != O_RDONLY) && (flags != O_WRONLY)) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  if (flags == O_RDONLY) {
+    channels = readers;
+  } else {
+    channels = writers;
+  }
+
+  fd = channels[gd].fd;
+  if (fd <= 0) {
+    errno = ENODEV;
+    return -1;
+  }
+
+  return ioctl(fd, cmd);
+}
+
+int pirate_ioctl1_int(int gd, int flags, long cmd, int arg) {
+  pirate_channel_t *channels;
+  int fd;
+
+  if (gd < 0 || gd >= PIRATE_NUM_CHANNELS) {
+    errno = EBADF;
+    return -1;
+  }
+
+  if ((flags != O_RDONLY) && (flags != O_WRONLY)) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  if (flags == O_RDONLY) {
+    channels = readers;
+  } else {
+    channels = writers;
+  }
+
+  fd = channels[gd].fd;
+  if (fd <= 0) {
+    errno = ENODEV;
+    return -1;
+  }
+
+  return ioctl(fd, cmd, arg);
+}
+
 int pirate_set_channel_type(int gd, channel_t channel_type) {
   if (gd < 0 || gd >= PIRATE_NUM_CHANNELS) {
     errno = EBADF;
@@ -265,20 +349,20 @@ int pirate_get_pathname(int gd, char *pathname) {
   return 0;
 }
 
-int pirate_set_shmem_size(int gd, int shmem_size) {
+int pirate_set_buffer_size(int gd, int buffer_size) {
   if (gd < 0 || gd >= PIRATE_NUM_CHANNELS) {
     errno = EBADF;
     return -1;
   }
-  readers[gd].shmem_size = shmem_size;
-  writers[gd].shmem_size = shmem_size;
+  readers[gd].buffer_size = buffer_size;
+  writers[gd].buffer_size = buffer_size;
   return 0;
 }
 
-int pirate_get_shmem_size(int gd) {
+int pirate_get_buffer_size(int gd) {
   if (gd < 0 || gd >= PIRATE_NUM_CHANNELS) {
     errno = EBADF;
     return -1;
   }
-  return readers[gd].shmem_size;
+  return readers[gd].buffer_size;
 }

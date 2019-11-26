@@ -1,3 +1,18 @@
+/*
+ * This work was authored by Two Six Labs, LLC and is sponsored by a subcontract
+ * agreement with Galois, Inc.  This material is based upon work supported by
+ * the Defense Advanced Research Projects Agency (DARPA) under Contract No.
+ * HR0011-19-C-0103.
+ *
+ * The Government has unlimited rights to use, modify, reproduce, release,
+ * perform, display, or disclose computer software or computer software
+ * documentation marked with this legend. Any reproduction of technical data,
+ * computer software, or portions thereof marked with this legend must also
+ * reproduce this marking.
+ *
+ * Copyright 2019 Two Six Labs, LLC.  All rights reserved.
+ */
+
 #ifndef __PIRATE_PRIMITIVES_H
 #define __PIRATE_PRIMITIVES_H
 
@@ -7,6 +22,7 @@
 #include "shmem.h"
 
 #define PIRATE_FILENAME "/tmp/gaps.channel.%d"
+#define PIRATE_DOMAIN_FILENAME "/tmp/gaps.channel.%d.sock"
 #define PIRATE_SHM_NAME "/gaps.channel.%d"
 #define PIRATE_LEN_NAME 64
 
@@ -22,6 +38,10 @@ typedef enum {
   // named pipe. pirate_set_pathname(int, char *) must
   // be used to specify the pathname.
   DEVICE,
+  // The gaps channel is implemented by using Unix domain sockets
+  // The name of the socket is formatted with PIRATE_DOMAIN_FILENAME
+  // where %d is the gaps descriptor.
+  UNIX_SOCKET,
   // The gaps channel is implemented using shared memory.
   // This feature is disabled by default. It must be enabled
   // by setting PIRATE_SHMEM_FEATURE in CMakeLists.txt
@@ -34,7 +54,7 @@ typedef struct {
   int fd;                       // file descriptor
   channel_t channel;            // channel type
   char *pathname;               // optional device path
-  int shmem_size;               // optional shared memory buffer size
+  int buffer_size;              // optional memory buffer size
   shmem_buffer_t *shmem_buffer; // optional shared memory buffer
 } pirate_channel_t;
 
@@ -71,10 +91,6 @@ ssize_t pirate_write(int gd, const void *buf, size_t count);
 // -1 is returned, and errno is set appropriately.
 int pirate_close(int gd, int flags);
 
-// Invoke fcntl() on the underlying file descriptor
-int pirate_fcntl0(int gd, int flags, int cmd);
-int pirate_fcntl1_int(int gd, int flags, int cmd, int arg);
-
 // Sets the channel type for the read and write ends
 // of the gaps descriptor. Must be configured before
 // the channel is opened. Returns zero on success.
@@ -99,14 +115,22 @@ int pirate_set_pathname(int gd, char *pathname);
 // On error -1 is returned, and errno is set appropriately.
 int pirate_get_pathname(int gd, char *pathname);
 
-// Sets the shared memory buffer size for the gaps channel.
-// Only valid if the channel type is SHMEM.
-// If zero then DEFAULT_SHMEM_BUFFER bytes will be allocated.
+// Sets the memory buffer size for the gaps channel.
+// Only valid if the channel type is SHMEM or UNIX_SOCKET.
+// If zero then SHMEM will allocate DEFAULT_SHMEM_BUFFER bytes.
 // On error -1 is returned, and errno is set appropriately.
-int pirate_set_shmem_size(int gd, int shmem_size);
+int pirate_set_buffer_size(int gd, int buffer_size);
 
 // Gets the shared memory buffer size for the gaps channel.
 // On error -1 is returned, and errno is set appropriately.
-int pirate_get_shmem_size(int gd);
+int pirate_get_buffer_size(int gd);
+
+// Invoke fcntl() on the underlying file descriptor
+int pirate_fcntl0(int gd, int flags, int cmd);
+int pirate_fcntl1_int(int gd, int flags, int cmd, int arg);
+
+// Invoke ioctl() on the underlying device
+int pirate_ioctl0(int gd, int flags, long cmd);
+int pirate_ioctl1_int(int gd, int flags, long cmd, int arg);
 
 #endif //__PIRATE_PRIMITIVES_H

@@ -1,7 +1,24 @@
+/*
+ * This work was authored by Two Six Labs, LLC and is sponsored by a subcontract
+ * agreement with Galois, Inc.  This material is based upon work supported by
+ * the Defense Advanced Research Projects Agency (DARPA) under Contract No.
+ * HR0011-19-C-0103.
+ *
+ * The Government has unlimited rights to use, modify, reproduce, release,
+ * perform, display, or disclose computer software or computer software
+ * documentation marked with this legend. Any reproduction of technical data,
+ * computer software, or portions thereof marked with this legend must also
+ * reproduce this marking.
+ *
+ * Copyright 2019 Two Six Labs, LLC.  All rights reserved.
+ */
+
 #define FUSE_USE_VERSION 31
 #define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stddef.h>
@@ -17,7 +34,7 @@
 
 #include "fioc.h"
 
-#define PIRATE_FILENAME         "/tmp/gaps.channel.%s"
+#define PIRATE_FILENAME "/tmp/gaps.channel.%s"
 
 static char dev_name[128];
 static char reader_buf[PIPE_BUF];
@@ -125,7 +142,7 @@ static void cusegaps_write(fuse_req_t req, const char *buf, size_t size,
   (void)off;
   (void)fi;
   int err, nbytes;
-  const struct fuse_ctx* fuse_ctx;
+  const struct fuse_ctx *fuse_ctx;
 
   nbytes = write(writer_fd, buf, size);
   if (nbytes < 0) {
@@ -149,20 +166,41 @@ static void cusegaps_ioctl(fuse_req_t req, int cmd, void *arg,
                            struct fuse_file_info *fi, unsigned flags,
                            const void *in_buf, size_t in_bufsz,
                            size_t out_bufsz) {
-  (void)arg;
-  (void)fi;
   (void)in_buf;
   (void)in_bufsz;
   (void)out_bufsz;
+
+  int rv, fd, data, fi_flags;
 
   if (flags & FUSE_IOCTL_COMPAT) {
     fuse_reply_err(req, ENOSYS);
     return;
   }
 
-  printf("Received ioctl command %d\n", cmd);
+  fi_flags = fi->flags & 0x3;
 
-  fuse_reply_err(req, EINVAL);
+  printf("Received ioctl command %d\n", cmd);
+  switch (cmd) {
+  case F_SETPIPE_SZ:
+    if (fi_flags == O_RDONLY) {
+      fd = reader_fd;
+    } else if (fi_flags == O_WRONLY) {
+      fd = writer_fd;
+    } else {
+      fuse_reply_err(req, EINVAL);
+      return;
+    }
+    data = (uintptr_t)arg;
+    rv = fcntl(fd, F_SETPIPE_SZ, data);
+    if (rv < 0) {
+      fuse_reply_err(req, errno);
+    } else {
+      fuse_reply_ioctl(req, 0, NULL, 0);
+    }
+    break;
+  default:
+    fuse_reply_err(req, EINVAL);
+  }
 }
 
 struct cusegaps_param {
@@ -174,11 +212,8 @@ struct cusegaps_param {
   { t, offsetof(struct cusegaps_param, p), 1 }
 
 static const struct fuse_opt cusegaps_opts[] = {
-    CUSEXMP_OPT("-n %s", dev_name),
-    CUSEXMP_OPT("--name %s", dev_name),
-    FUSE_OPT_KEY("-h", 0),
-    FUSE_OPT_KEY("--help", 0),
-    FUSE_OPT_END};
+    CUSEXMP_OPT("-n %s", dev_name), CUSEXMP_OPT("--name %s", dev_name),
+    FUSE_OPT_KEY("-h", 0), FUSE_OPT_KEY("--help", 0), FUSE_OPT_END};
 
 static int cusegaps_process_arg(void *data, const char *arg, int key,
                                 struct fuse_args *outargs) {
