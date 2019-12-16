@@ -13,22 +13,9 @@
  * Copyright 2019 Two Six Labs, LLC.  All rights reserved.
  */
 
-#ifndef __SHMEM_H
-#define __SHMEM_H
+#include <stdio.h>
 
-#include "primitives.h"
-#include "shmem_buffer.h"
-
-#define DEFAULT_SHMEM_BUFFER (131072)
-
-int shmem_buffer_open(int gd, int flags, char *name, pirate_channel_t *channel);
-
-ssize_t shmem_buffer_read(shmem_buffer_t *shmem_buffer, void *buf,
-                          size_t count);
-
-ssize_t shmem_buffer_write(shmem_buffer_t *shmem_buffer, const void *buf,
-                           size_t size);
-
-int shmem_buffer_close(int flags, shmem_buffer_t *shmem_buffer);
-
-#endif
+int main() {
+	printf("hello\n");
+	return 0;
+}
