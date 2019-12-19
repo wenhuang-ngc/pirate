@@ -13,6 +13,8 @@
  * Copyright 2019 Two Six Labs, LLC.  All rights reserved.
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,10 +22,9 @@
 #include <regex.h>
 #include <pthread.h>
 #include <sys/stat.h>
+
 #include "primitives.h"
 #include "tiny.h"
-
-
 
 #define HIGH_TO_LOW_CH 0
 #define LOW_TO_HIGH_CH 1
@@ -33,6 +34,11 @@ typedef struct {
     char buf[DATA_LEN];
     int len;
 } data_t;
+
+typedef struct {
+    int rv;
+    pthread_t tid;
+} pthread_alloc_t;
 
 typedef enum {
     LEVEL_HIGH,
@@ -229,27 +235,27 @@ static void* gaps_thread(void *arg) {
 }
 
 
-static int run_gaps()
-{
-    pthread_t tid;
-    int ret = pthread_create(&tid, NULL, gaps_thread, NULL);
-    if (ret != 0) {
-        fprintf(stderr, "Failed to start the GAPS thread\n");
-        return ret;
-    }
-    return 0;
+static pthread_alloc_t run_gaps() {
+    pthread_alloc_t ret;
+    ret.rv = pthread_create(&ret.tid, NULL, gaps_thread, NULL);
+    return ret;
 }
 
 
 static int web_server(int port, level_e level) {
     int rv;
+    char *err;
     server_t si;
     client_t ci;
     request_t ri;
     data_t data;
 
     /* Create, initialize, bind, listen on server socket */
-    server_connect(&si, port);
+    err = server_connect(&si, port);
+    if (err != NULL) {
+        perror(err);
+        return 1;
+    }
 
     /*
      * Wait for a connection request, parse HTTP, serve high requested content,
@@ -257,13 +263,17 @@ static int web_server(int port, level_e level) {
      */
     while (1) {
         /* accept client's connection and open fstream */
-        client_connect(&si, &ci);
+        err = client_connect(&si, &ci);
+        if (err != NULL) {
+            perror(err);
+            return 1;
+        }
 
         /* process client request */
         client_request_info(&ci, &ri);
 
         /* tiny only supports the GET method */
-        if (strcasecmp(ri.method, "GET")) {
+        if (strncasecmp(ri.method, "GET", 4)) {
             cerror(ci.stream, ri.method, 405, "Not Implemented");
             client_disconnect(&ci);
             continue;
@@ -293,6 +303,8 @@ static int web_server(int port, level_e level) {
 
 
 int main_high(int argc, char* argv[]) {
+    pthread_alloc_t gaps;
+
     /* Validate and parse command-line options */
     if (argc != 2) {
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -312,8 +324,9 @@ int main_high(int argc, char* argv[]) {
         return -1;
     }
 
-    if (run_gaps() != 0) {
-        fprintf(stderr, "Failed to start the GAPS handler");
+    gaps = run_gaps();
+    if (gaps.rv) {
+        fprintf(stderr, "Unable to start the GAPS thread\n");
         return -1;
     }
 
