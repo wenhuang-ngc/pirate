@@ -23,7 +23,8 @@
 int pirate_shmem_open(int gd, int flags, pirate_channel_t *channels) {
 #ifdef PIRATE_SHMEM_FEATURE
   char pathname[PIRATE_LEN_NAME];
-  snprintf(pathname, sizeof(pathname) - 1, PIRATE_SHM_NAME, gd);
+  memset(pathname, 0, PIRATE_LEN_NAME);
+  snprintf(pathname, PIRATE_LEN_NAME, PIRATE_SHM_NAME, gd);
   return shmem_buffer_open(gd, flags, pathname, &channels[gd]);
 #else
   (void)gd;

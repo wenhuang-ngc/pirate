@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.5)
 
 project(simple_demo)
 
+set(CMAKE_BUILD_TYPE RelwithDebInfo)
+
 include_directories(../libpirate)
 
 SET(CMAKE_C_COMPILER "clang")
@@ -44,8 +46,8 @@ add_executable(${BOTH_ELF}
 target_compile_options(${BOTH_ELF} PRIVATE ${BUILD_FLAGS} "-D_GNU_SOURCE")
 add_dependencies(${BOTH_ELF} HIGH_POST_BUILD LOW_POST_BUILD)
 
-set(STAIC_HTML "index.html")
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${STAIC_HTML} ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)
+set(STATIC_HTML "index.html")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${STATIC_HTML} ${CMAKE_CURRENT_BINARY_DIR} COPYONLY)
 
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
     ${CMAKE_CURRENT_BINARY_DIR}/${HIGH_ELF_O}
