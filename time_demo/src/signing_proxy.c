@@ -5,10 +5,9 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <sys/queue.h>
-#include <openssl/rand.h>
-
 #include "gaps_packet.h"
 #include "common.h"
+#include "ts_crypto.h"
 
 /* Default values */
 #define DEFAULT_POLL_PERIOD_MS      1000
@@ -53,7 +52,7 @@ typedef struct {
 } proxy_t;
 
 /* Command-line options */
-const char* argp_program_version = DEMO_VERSION;
+const char *argp_program_version = DEMO_VERSION;
 static struct argp_option options[] = {
     { "period",    'p', "MS",  0, "Request polling period",      0 },
     { "queue-len", 'q', "LEN", 0, "Request queue length",        0 },
@@ -61,8 +60,8 @@ static struct argp_option options[] = {
     { 0 }
 };
 
-static error_t parse_opt(int key, char* arg, struct argp_state* state) {
-    proxy_t* proxy = (proxy_t *) state->input;
+static error_t parse_opt(int key, char *arg, struct argp_state *state) {
+    proxy_t *proxy = (proxy_t *) state->input;
 
     switch (key) {
 
@@ -88,7 +87,7 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
     return 0;
 }
 
-static void parse_args(int argc, char* argv[], proxy_t* proxy) {
+static void parse_args(int argc, char *argv[], proxy_t *proxy) {
     struct argp argp  = {
         .options = options,
         .parser = parse_opt,
@@ -105,7 +104,7 @@ static void parse_args(int argc, char* argv[], proxy_t* proxy) {
 
 
 /* Initialize GAPS channels */
-static int gaps_init(proxy_t* proxy) {
+static int gaps_init(proxy_t *proxy) {
     proxy->gaps.client.wr = proxy->gaps.client.rd = -1;
     proxy->gaps.signer.wr = proxy->gaps.signer.rd = -1;
 
@@ -145,7 +144,7 @@ static int gaps_init(proxy_t* proxy) {
 }
 
 /* Close GAPS channels */
-static void gaps_term(proxy_t* proxy) {
+static void gaps_term(proxy_t *proxy) {
     if (proxy->gaps.client.rd != -1) {
         pirate_close(proxy->gaps.client.rd, O_RDONLY);
         proxy->gaps.client.rd = -1;
@@ -169,16 +168,16 @@ static void gaps_term(proxy_t* proxy) {
 
 
 /* Push an intem on a queue */
-static void request_queue_push(request_queue_t* queue, 
-    proxy_request_entry_t* entry) {
+static void request_queue_push(request_queue_t *queue, 
+    proxy_request_entry_t *entry) {
     pthread_mutex_lock(&queue->lock);
     STAILQ_INSERT_TAIL(&queue->head, entry, entry);
     pthread_mutex_unlock(&queue->lock);
 }
 
 /* Pop an item from a queue */
-static proxy_request_entry_t* request_queue_pop(request_queue_t* queue) {
-    proxy_request_entry_t* entry = NULL;
+static proxy_request_entry_t *request_queue_pop(request_queue_t *queue) {
+    proxy_request_entry_t *entry = NULL;
     pthread_mutex_lock(&queue->lock);
     entry = STAILQ_FIRST(&queue->head);
     if (entry != NULL) {
@@ -189,13 +188,13 @@ static proxy_request_entry_t* request_queue_pop(request_queue_t* queue) {
 }
 
 /* Initialize a request queue */
-static int request_queue_init(request_queue_t* queue, uint32_t num) {
+static int request_queue_init(request_queue_t *queue, uint32_t num) {
     STAILQ_INIT(&queue->head);
     pthread_mutex_init(&queue->lock, NULL);
 
     /* Allocate queue entries */
     for (uint32_t i = 0; i < num; i++) {
-        proxy_request_entry_t* entry = (proxy_request_entry_t*)
+        proxy_request_entry_t *entry = (proxy_request_entry_t*)
             calloc(1, sizeof(proxy_request_entry_t));
         if (entry == NULL) {
             perror("Failed to allocate memory for a signing request\n");
@@ -209,8 +208,8 @@ static int request_queue_init(request_queue_t* queue, uint32_t num) {
 }
 
 /* Cleanup a request queue */
-static void request_queue_term(request_queue_t* queue) {
-    proxy_request_entry_t* entry = NULL;
+static void request_queue_term(request_queue_t *queue) {
+    proxy_request_entry_t *entry = NULL;
     while ((entry = request_queue_pop(queue)) != NULL) {
         free(entry);
     }
@@ -219,8 +218,8 @@ static void request_queue_term(request_queue_t* queue) {
 
 
 /* Thread for generating simulated requests */
-static void* sim_request_gen(void* argp) {
-    proxy_t* proxy = (proxy_t *)argp;
+static void *sim_request_gen(void *argp) {
+    proxy_t *proxy = (proxy_t *)argp;
     
     /* Generate simulated requests at 1/2 * poll period */
     const uint64_t gen_period_ns = proxy->poll_period_ms * (10000000 / 2);
@@ -232,7 +231,7 @@ static void* sim_request_gen(void* argp) {
     while (proxy->threads.sim.running) {
         nanosleep(&ts, NULL);
 
-        proxy_request_entry_t* entry = NULL;
+        proxy_request_entry_t *entry = NULL;
         pthread_mutex_lock(&proxy->queue.req.lock);
         entry = STAILQ_FIRST(&proxy->queue.req.head);
         pthread_mutex_unlock(&proxy->queue.req.lock);
@@ -246,9 +245,8 @@ static void* sim_request_gen(void* argp) {
             fprintf(stderr, "Failed to pop a request entry\n");
             return NULL;
         }
-        
-        if ((RAND_bytes(entry->req.n, sizeof(entry->req.n)) != 1) || 
-            (RAND_bytes(entry->req.h_d, sizeof(entry->req.h_d)) != 1)) {
+
+        if (ts_create_request(NULL, &entry->req) != 0) {
             perror("Failed to generate random request data\n");
             return NULL;
         }
@@ -257,7 +255,7 @@ static void* sim_request_gen(void* argp) {
         request_queue_push(&proxy->queue.req, entry);
 
         if (proxy->verbosity >= VERBOSITY_MAX) {
-            print_proxy_req("Simulated request added", &entry->req);
+            print_proxy_request("Simulated request added", &entry->req);
         }
     }
 
@@ -266,11 +264,11 @@ static void* sim_request_gen(void* argp) {
 
 
 /* Sign request receive thread */
-static void* request_receive(void* argp) {
-    proxy_t* proxy = (proxy_t*) argp;
+static void *request_receive(void *argp) {
+    proxy_t *proxy = (proxy_t*) argp;
     ssize_t len;
     proxy_request_t req;
-    proxy_request_entry_t* entry = NULL;
+    proxy_request_entry_t *entry = NULL;
 
     while (proxy->threads.rx.running) {
         len = gaps_packet_read(proxy->gaps.client.rd, &req, sizeof(req));
@@ -280,12 +278,14 @@ static void* request_receive(void* argp) {
         }
 
         if (proxy->verbosity >= VERBOSITY_MAX) {
-            print_proxy_req("Client request received", &req);
+            print_proxy_request("Client request received", &req);
         }
 
         if ((entry = request_queue_pop(&proxy->queue.free)) == NULL) {
-            proxy_sign_response_t rsp = {
-                .status = BUSY
+            tsa_response_t rsp = {
+                .status = BUSY,
+                .len = 0,
+                .ts = { 0 }
             };
 
             if (gaps_packet_write(PROXY_TO_CLIENT, &rsp, sizeof(rsp)) != 0) {
@@ -302,14 +302,13 @@ static void* request_receive(void* argp) {
         entry->req = req;
         entry->simulated = 0;
         request_queue_push(&proxy->queue.req, entry);
-
     }
 
     return NULL;
 }
 
 /* Start a worker thread */
-static int start_thread(work_thread_t* t, void *(*func) (void *), void* arg) {
+static int start_thread(work_thread_t *t, void *(*func) (void *), void *arg) {
     t->running = 1;
     int sts = pthread_create(&t->tid, NULL, func, arg);
     if (sts != 0) {
@@ -322,7 +321,7 @@ static int start_thread(work_thread_t* t, void *(*func) (void *), void* arg) {
 }
 
 /* Stop a worker thread */
-static void stop_thread(work_thread_t* t) {
+static void stop_thread(work_thread_t *t) {
     if (t->running == 0) {
         return;
     }
@@ -332,34 +331,14 @@ static void stop_thread(work_thread_t* t) {
 }
 
 
-/* Generate a new a timestamp sign request */
-static int get_timestamp_sign_request(const proxy_request_t* client_req,
-                tsa_request_t* ts_req, proxy_sign_response_t* client_rsp) {
-    SHA256_CTX sha256;
-
-    if (RAND_bytes(client_rsp->r, sizeof(client_rsp->r)) != 1) {
-        fprintf(stderr, "Failed to generate %lu random bytes\b", 
-                sizeof(client_rsp->r));
-        
-    }
-
-    SHA256_Init(&sha256);
-    SHA256_Update(&sha256, client_rsp->r, sizeof(client_rsp->r));
-    SHA256_Update(&sha256, client_req->h_d, sizeof(client_req->h_d));
-    SHA256_Final(ts_req->h_r, &sha256);
-    return 0;
-}
-
 /* Proxy request polling and signing */
-static int proxy_run(proxy_t* proxy) {
+static int proxy_run(proxy_t *proxy) {
     int sts;
     ssize_t len;
-    proxy_request_entry_t* entry = NULL;
-    proxy_sign_response_t rsp = {
-        .status = OK
-    };
-    tsa_request_t ts_req;
-    tsa_response_t ts_rsp;
+    tsa_request_t req = TSA_REQUEST_INIT;
+    tsa_response_t rsp = TSA_RESPONSE_INIT;
+    proxy_request_entry_t *entry = NULL;
+
     const struct timespec ts = {
         .tv_sec  = proxy->poll_period_ms / 1000,
         .tv_nsec = (proxy->poll_period_ms % 1000) * 1000000
@@ -376,34 +355,34 @@ static int proxy_run(proxy_t* proxy) {
         }
 
         if (proxy->verbosity >= VERBOSITY_MIN) {
-            print_proxy_req("Processing next request", &entry->req);
+            print_proxy_request("Processing next request", &entry->req);
         }
         
         /* Use the timestamp service to sign */
-        if (get_timestamp_sign_request(&entry->req, &ts_req, &rsp) != 0) {
-            fprintf(stderr, "Failed to generate timestamp sign request\n");
+        if (ts_create_query(&entry->req, &req) != 0) {
+            fprintf(stderr, "Failed to generate timestamp sign query\n");
             return -1;
         }
 
         if (proxy->verbosity >= VERBOSITY_MIN) {
-            print_tsa_request("Sent TSA request", &ts_req);
+            print_tsa_request("Sent TSA request", &req);
         }
 
         request_queue_push(&proxy->queue.free, entry);
-        sts = gaps_packet_write(proxy->gaps.signer.wr, &ts_req, sizeof(ts_req));
+        sts = gaps_packet_write(proxy->gaps.signer.wr, &req, sizeof(req));
         if (sts != 0) {
             fprintf(stderr, "Failed to send timestamp request\n");
             return -1;
         }
 
-        len = gaps_packet_read(proxy->gaps.signer.rd, &ts_rsp, sizeof(ts_rsp));
-        if (len != sizeof(ts_rsp)) {
+        len = gaps_packet_read(proxy->gaps.signer.rd, &rsp, sizeof(rsp));
+        if (len != sizeof(rsp)) {
             fprintf(stderr, "Failed to receive timestamp response\n");
             return -1;
         }
         
         if (proxy->verbosity >= VERBOSITY_MIN) {
-            print_tsa_response("TSA response received", &ts_rsp);
+            print_tsa_response("TSA response received", &rsp);
         }
 
         if (entry->simulated != 0) {
@@ -421,7 +400,7 @@ static int proxy_run(proxy_t* proxy) {
 }
 
 /* Start the proxy */
-static int proxy_init(proxy_t* proxy) {
+static int proxy_init(proxy_t *proxy) {
     /* Initialize GAPS channels */
     if (gaps_init(proxy) != 0) {
         fprintf(stderr, "Failed to initialize GAPS channels\n");
@@ -446,7 +425,7 @@ static int proxy_init(proxy_t* proxy) {
 }
 
 /* Release proxy resources */
-static void proxy_term(proxy_t* proxy) {
+static void proxy_term(proxy_t *proxy) {
     /* Close GAPS channels */
     gaps_term(proxy);
 
@@ -460,7 +439,7 @@ static void proxy_term(proxy_t* proxy) {
 }
 
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
     /* Parse command-line options */
     proxy_t proxy;
     memset(&proxy, 0, sizeof(proxy));

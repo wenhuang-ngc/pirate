@@ -1,55 +1,81 @@
 #include <stdio.h>
 #include "common.h"
 
+#define LINE_LEN 32
 
-void print_hex_str(const char* msg, const uint8_t* data, uint32_t len) {
-    char str[1024];
-    static char digits[16] = {
+static void print_hex_str(const char *msg, const uint8_t *data, uint32_t len) {
+    static const char digits[16] = {
         '0', '1', '2', '3', '4', '5', '6', '7',
         '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
     };
-    
-    if ((len << 1) + 1 > sizeof(str)) {
-        fprintf(stderr, "Buffer %u too long\n", len);
-        return;
-    }
+    uint32_t remain = len;
+    uint32_t off = 0;
 
-    for (uint32_t i = 0; i < len; i++) {
-        const uint32_t off = i << 1;
-        str[off + 1] = digits[data[i] & 0xF];
-        str[off] = digits[data[i] >> 4];
-    }
-    str[len << 1] = '\0';
+    fprintf(stdout, "%s\n", msg);
+    do {
+        char buf[(LINE_LEN << 1) + 11];
+        char *buf_p = buf;
+        const uint32_t chunk_len = remain > LINE_LEN ? LINE_LEN : remain;
+        const uint8_t *data_p = data + off;
 
-    fprintf(stdout, "%7s : %s\n", msg, str);
+        buf_p += sprintf(buf_p, "   %04X : ", off);
+
+        for (uint32_t i = 0; i < chunk_len; i++) {
+            *buf_p++ = digits[data_p[i] >> 4];
+            *buf_p++ = digits[data_p[i] & 0xF];
+        }
+        buf[buf_p - buf] = '\0';
+        fprintf(stdout, "%s\n", buf);
+        remain -= chunk_len;
+        off += chunk_len;
+    } while(remain > 0);
 }
 
 
-void print_proxy_req(const char* msg, const proxy_request_t* req) {
-    fprintf(stdout, "\n%s\nProxy Sign Request:\n", msg);
-    print_hex_str("N", req->n, sizeof(req->n));
-    print_hex_str("H_D", req->h_d, sizeof(req->h_d));
+static const char *ts_status_str(status_t sts) {
+    static const char *ret = "UNKNOWN";
+
+    switch (sts) {
+    case OK:
+        ret = "OK";
+        break;
+    case BUSY:
+        ret = "BUSY";
+        break;
+    case ERR:
+        ret = "ERROR";
+        break;
+    case UNKNOWN:
+    default:
+        break;
+    }
+
+    return ret;
+}
+
+
+void print_proxy_request(const char *msg, const proxy_request_t *req) {
+    fprintf(stdout, "\n%s\nProxy Sign Request\n", msg);
+    print_hex_str("SHA-256", req->digest, sizeof(req->digest));
     fflush(stdout);
 }
 
 
-void print_tsa_request(const char* msg, const tsa_request_t* req) {
+void print_tsa_request(const char *msg, const tsa_request_t *req) {
     fprintf(stdout, "\n%s\nTimestamp Service Sign Request:\n", msg);
-    print_hex_str("H_R", req->h_r, sizeof(req->h_r));
+    print_hex_str("REQUEST", req->req, req->len);
     fflush(stdout);
 }
 
 
-void print_tsa_response(const char* msg, const tsa_response_t* rsp) {
-    fprintf(stdout, "\n%s\nTimestamp Service Sign Response:\n", msg);
-    print_hex_str("C_R", rsp->c_r, sizeof(rsp->c_r));
-    fflush(stdout);
-}
-
-
-void print_proxy_sign_response(const proxy_sign_response_t* rsp) {
-    (void) rsp;
-    fprintf(stdout, "Proxy Sign Response:\n");
-    // TODO
+void print_tsa_response(const char *msg, const tsa_response_t *rsp) {
+    fprintf(stdout, "\n%s\nTimestamp Sign Response:\n", msg);
+    fprintf(stdout, " STATUS: %s\n", ts_status_str(rsp->status));
+    if (rsp->status == OK) {
+        fprintf(stdout, " LENGTH: %u\n", rsp->len);
+        if ((rsp->len != 0) && (rsp->len <= MAX_TS_LEN)) {
+            print_hex_str("TS", rsp->ts, rsp->len);
+        }
+    }
     fflush(stdout);
 }

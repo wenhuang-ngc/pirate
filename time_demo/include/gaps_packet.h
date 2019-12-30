@@ -18,7 +18,7 @@
  *  size of the received packet on success
  *  -1 on failure, the GAPS channel must be closed
  */
-ssize_t gaps_packet_read(int gd, void* buf, uint32_t buf_len);
+ssize_t gaps_packet_read(int gd, void *buf, uint32_t buf_len);
 
 
 /*
@@ -35,7 +35,7 @@ ssize_t gaps_packet_read(int gd, void* buf, uint32_t buf_len);
  *   -1 on failure, the GAPS channel must be closed
  * 
  */
-int gaps_packet_write(int gd, void* buf, size_t len);
+int gaps_packet_write(int gd, void *buf, size_t len);
 
 
 #endif /* _GAPS_PACKET_H */

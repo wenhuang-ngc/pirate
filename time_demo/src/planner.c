@@ -3,29 +3,24 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <linux/limits.h>
-#include <openssl/sha.h>
-#include <openssl/rand.h>
-#include "gaps_packet.h"
 
+#include "gaps_packet.h"
+#include "ts_crypto.h"
 #include "common.h"
 
-#define MAX_INPUT_COUNT 16
+#define MAX_INPUT_COUNT 128
 
 typedef struct {
-    struct {
-        char path[PATH_MAX];
-        uint8_t* buf;
-        uint32_t len;
-    } data;
+    char path[PATH_MAX];
+    uint32_t len;
 
     proxy_request_t req;
-    proxy_sign_response_t rsp;
-} block_t;
+    tsa_response_t rsp;
+} client_data_t;
 
 typedef struct {
     uint32_t validate;
@@ -33,14 +28,14 @@ typedef struct {
     uint32_t request_delay_ms;
     verbosity_level_t verbosity;
 
-    block_t data[MAX_INPUT_COUNT];
+    client_data_t data[MAX_INPUT_COUNT];
     uint32_t count;
 
     gaps_channel_pair_t gaps;
 } client_t;
 
-/* Command-line options */
-const char* argp_program_version = DEMO_VERSION;
+static client_t client_g;
+
 static struct argp_option options[]  = {
     { "validate",  'V', NULL, 0, "Validate timestamp signatures", 0 },
     { "save",      's', NULL, 0, "Save timestamp signatures",     0 },
@@ -49,8 +44,9 @@ static struct argp_option options[]  = {
     { 0 }
 };
 
-static error_t parse_opt(int key, char* arg, struct argp_state* state) {
-    client_t* client = (client_t*) state->input;
+static error_t parse_opt(int key, char *arg, struct argp_state *state) {
+    client_t *client = (client_t*) state->input;
+    
 
     switch (key) {
 
@@ -73,26 +69,29 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         break;
 
     case ARGP_KEY_ARG:
+    {
+        struct stat sb;
+        client_data_t *d = NULL;
         if (client->count >=  MAX_INPUT_COUNT) {
             argp_failure(state, 1, 0, "exceeded input limit");
         }
 
-        if (realpath(arg, client->data[client->count++].data.path) == NULL) {
+        d = &client->data[client->count++];
+        if (realpath(arg, d->path) == NULL) {
             argp_failure(state, 1, 0, "failed to resolve %s path\n", arg);
         }
+
+        if (stat(d->path, &sb) != 0) {
+            argp_failure(state, 1, 0, "Failed to stat %s\n", d->path);
+        }
+
+        d->len = sb.st_size;
+    }
         break;
 
     case ARGP_KEY_END:
         if (client->count == 0) {
             argp_failure(state, 1, 0, "no input files");
-        }
-
-        if (client->verbosity >= VERBOSITY_MAX) {
-            fprintf(stdout, "%2u input test files\n", client->count);
-            for (uint32_t i = 0; i < client->count; i++) {
-                fprintf(stdout, "%s\n", client->data[i].data.path);
-            }
-            fflush(stdout);
         }
         break;
 
@@ -104,7 +103,7 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
 }
 
 
-static void parse_args(int argc, char* argv[], client_t* client) {
+static void parse_args(int argc, char *argv[], client_t *client) {
     struct argp argp = {
         .options = options,
         .parser = parse_opt,
@@ -120,7 +119,7 @@ static void parse_args(int argc, char* argv[], client_t* client) {
 
 
 /* Initialize GAPS channels */
-static int gaps_init(client_t* client) {
+static int gaps_init(client_t *client) {
     client->gaps.wr = client->gaps.rd = -1;
 
     if ((pirate_set_channel_type(CLIENT_TO_PROXY, GAPS_CH_TYPE) != 0) || 
@@ -145,7 +144,7 @@ static int gaps_init(client_t* client) {
 }
 
 /* Close GAPS channels */
-static void gaps_term(client_t* client) {
+static void gaps_term(client_t *client) {
     if (client->gaps.wr != -1) {
         pirate_close(client->gaps.wr, O_WRONLY);
         client->gaps.wr = -1;
@@ -158,114 +157,80 @@ static void gaps_term(client_t* client) {
 }
 
 
-/* Read test data */
-static int data_init(client_t* client) {
-    for (uint32_t i = 0; i < client->count; i++) {
-        block_t* entry = &client->data[i];
-        struct stat sb;
+/* Save timestamp sign response to a file */
+static int client_save_ts_response(const client_data_t *data, uint32_t idx) {
+    char path[PATH_MAX];
 
-        /* Read test data */
-        if (stat(entry->data.path, &sb) !=0) {
-            fprintf(stderr, "Failed to stat %s\n", entry->data.path);
-            return -1;
-        }
-
-        entry->data.len = sb.st_size;
-        entry->data.buf = (uint8_t* ) malloc(entry->data.len);
-        if (entry->data.buf == NULL) {
-            fprintf(stderr, "Failed to allocate %d bytes\n", entry->data.len);
-            return -1;
-        }
-
-        int fd = open(entry->data.path, O_RDONLY);
-        if (fd == -1) {
-            fprintf(stderr, "Failed to open %s\n", entry->data.path);
-            return -1;
-        }
-
-        ssize_t rd = read(fd, entry->data.buf, entry->data.len);
-        if (rd != entry->data.len) {
-            fprintf(stderr, "Failed to read %d bytes of data from %s\n", 
-                    entry->data.len, entry->data.path);
-            return -1;
-        }
-
-        /* Generate random iv */
-        if (RAND_bytes(entry->req.n, REQ_ID_LEN) != 1) {
-            fprintf(stderr, "Failed to generate init data of %u bytes\n",
-                    REQ_ID_LEN);
-            return -1;
-        }
-
-        /* Compute hash */
-        SHA256_CTX sha256;
-        SHA256_Init(&sha256);
-        SHA256_Update(&sha256, entry->req.n, sizeof(entry->req.n));
-        SHA256_Update(&sha256, entry->data.buf, entry->data.len);
-        SHA256_Final(entry->req.h_d, &sha256);
+    if ((data->rsp.status) != OK || (data->rsp.len == 0)) {
+        return 0;
     }
 
+    snprintf(path, sizeof(path)-1, "%s_%02u.tsr", data->path, idx);
+
+    fprintf(stdout, " === SAVE === %s\n", path);
     return 0;
-}
-
-/* Release test data */
-static void data_term(client_t* client) {
-    for (uint32_t i = 0; i < client->count; i++) {
-        block_t* entry = &client->data[i];
-        if (entry->data.buf != NULL) {
-            free(entry->data.buf);
-            entry->data.buf = NULL;
-        }
-    }
 }
 
 
 /* Acquire trusted timestamps */
-static int client_run(client_t* client) {
+static int client_run(client_t *client) {
     const struct timespec ts = {
         .tv_sec = client->request_delay_ms / 1000,
         .tv_nsec = (client->request_delay_ms % 1000) * 1000000
     };
     
     for (uint32_t i = 0; i < client->count; i++) {
+        client_data_t *d = &client->data[i];
+
         if (client->request_delay_ms != 0) {
             nanosleep(&ts, NULL);
         }
 
-        /* Send request */
-        block_t* b = &client->data[i];
-        proxy_request_t* req = &b->req;
-        if (client->verbosity >= VERBOSITY_MIN) {
-            print_proxy_req("Sending request", req);
-            fprintf(stdout, "%7s : %s\n", "PATH", b->data.path);
-            fprintf(stdout, "%7s : %u\n\n", "LENGTH", b->data.len);
+        /* Compose a request */
+        if (ts_create_request(d->path, &d->req) != 0) {
+            fprintf(stderr, "Failed to generate TS request\n");
+            return -1;
         }
 
-        int sts = gaps_packet_write(client->gaps.wr, req, sizeof(*req));
+        /* Send request */
+        int sts = gaps_packet_write(client->gaps.wr, &d->req, sizeof(d->req));
         if (sts == -1) {
             fprintf(stderr, "Failed to send signing request to proxy\n");
             return -1;
         }
 
+        if (client->verbosity >= VERBOSITY_MIN) {
+            print_proxy_request("SENT", &d->req);
+            fprintf(stdout, "%7s : %s\n", "PATH", d->path);
+            fprintf(stdout, "%7s : %u\n\n", "LENGTH", d->len);
+        }
+
         /* Get response */
-        sts = gaps_packet_read(client->gaps.rd, &b->rsp, sizeof(b->rsp));
-        if (sts != sizeof(b->rsp)) {
+        sts = gaps_packet_read(client->gaps.rd, &d->rsp, sizeof(d->rsp));
+        if (sts != sizeof(d->rsp)) {
             fprintf(stderr, "Failed to receive response\n");
             return -1;
         }
 
         if (client->verbosity >= VERBOSITY_MIN) {
-            print_proxy_sign_response(&b->rsp);
+            print_tsa_response("RECEIVED", &d->rsp);
         }
 
         /* Optionally validate the signature */
         if (client->validate != 0) {
-            fprintf(stdout, "Validate: TODO\n");
+            if (ts_validate(d->path, &d->rsp) == 0) {
+                fprintf(stdout, "Timestamp VALIDATED\n");
+            } else {
+                fprintf(stdout, "FAILED to validate the timestamp\n");
+            }
+            fflush(stdout);
         }
 
         /* Optionally save the timestamp signature */
         if (client->save != 0) {
-            fprintf(stdout, "Save: TODO\n");
+            if (client_save_ts_response(d, i) != 0) {
+                fprintf(stderr, "Failed to save timestamp response\n");
+            }
         }
     }
 
@@ -273,54 +238,25 @@ static int client_run(client_t* client) {
 }
 
 
-/* Initialize client resources */
-static int client_init(client_t* client) {
-    /* Initialize GAPS channels */
-    if (gaps_init(client) != 0) {
-        fprintf(stderr, "Failed to initialize GAPS channels\n");
-        return -1;
-    }
-
-    /* Read in test data */
-    if (data_init(client) != 0) {
-        fprintf(stderr, "Failed to read test data\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-/* Release client resources */
-static void client_term(client_t* client) {
-    /* Release test data */
-    data_term(client);
-
-    /* Close GAPS channels */
-    gaps_term(client);
-}
-
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
     /* Parse command-line options */
-    client_t client;
-    memset(&client, 0, sizeof(client));
-    parse_args(argc, argv, &client);
+    parse_args(argc, argv, &client_g);
 
     /* Initialize client resources */
-    if (client_init(&client) != 0) {
-        fprintf(stderr, "Failed to initialize client resources\n");
-        client_term(&client);
+    if (gaps_init(&client_g) != 0) {
+        fprintf(stderr, "Failed to initialize GAPS resources\n");
+        gaps_term(&client_g);
         return -1;
     }
 
     /* Acquire trusted timestamps */
-    if (client_run(&client) != 0) {
+    if (client_run(&client_g) != 0) {
         fprintf(stderr, "Failed to acquire trusted timestamps\n");
-        client_term(&client);
+        gaps_term(&client_g);
         return -1;
     }
 
     /* Release client resources */
-    client_term(&client);
+    gaps_term(&client_g);
     return 0;
 }

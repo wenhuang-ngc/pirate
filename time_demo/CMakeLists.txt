@@ -7,13 +7,18 @@ find_package(OpenSSL REQUIRED)
 
 include_directories(./include ../libpirate ${OPENSSL_INCLUDE_DIR})
 
+#add_library(openddl_dbg SHARED IMPORTED)
+#set_property(TARGET openddl_dbg PROPERTY IMPORTED_LOCATION "../../openssl/build/lib/libcrypto.so.3")
+
+
 set(CMAKE_C_COMPILER "clang")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEMO_VERSION='\"${VERSION}\"'")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEMO_VERSION='\"${VERSION}\"' -g")
 set(BUILD_FLAGS "-Werror" "-Wall" "-Wextra" "-Wpedantic")
 set(PIRATE_LIB "pirateprims-static")
 set(COMMON_SRC 
     "${PROJECT_SOURCE_DIR}/src/gaps_packet.c"
     "${PROJECT_SOURCE_DIR}/src/common.c"
+    "${PROJECT_SOURCE_DIR}/src/ts_crypto.c"
 )
 
 set(LEVEL_HIGH "high")

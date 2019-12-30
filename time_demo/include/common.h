@@ -20,7 +20,8 @@ typedef struct {
 typedef enum {
     OK,
     BUSY,
-    ERR
+    ERR,
+    UNKNOWN
 } status_t;
 
 /* Verbosity levels */
@@ -33,39 +34,33 @@ typedef enum {
 /* GAPS channel type used for the demo */
 #define GAPS_CH_TYPE PIPE
 
+#define NONCE_LENGTH    8
+#define MAX_REQ_LEN     128
+#define MAX_TS_LEN      (8 << 10)
+
 /* Structure passed from the client to the proxy */
-#define REQ_ID_LEN 32
 typedef struct {
-    unsigned char n[REQ_ID_LEN];
-    unsigned char h_d[SHA256_DIGEST_LENGTH];
+    uint8_t digest[SHA256_DIGEST_LENGTH];
 } proxy_request_t;
 
 /* Structure passed from the proxy to the signing service */
 typedef struct {
-    unsigned char h_r[SHA256_DIGEST_LENGTH];
+    uint32_t len;
+    uint8_t req[MAX_REQ_LEN];
 } tsa_request_t;
+#define TSA_REQUEST_INIT { .len = 0, .req = { 0 }}
 
-/* Structure passed from the signing service back to the proxy */
-#define REQ_RAND_LEN  REQ_ID_LEN
-#define CR_LEN        32
+/* Timestamp response */
 typedef struct {
     status_t status;
-    unsigned char c_r[CR_LEN];
+    uint32_t len;
+    uint8_t ts[MAX_TS_LEN];
 } tsa_response_t;
-
-/* Structure passed from the signing proxy back to the client */
-typedef struct {
-    status_t status;
-    unsigned char n[REQ_ID_LEN];
-    unsigned char r[REQ_RAND_LEN];
-    unsigned char foo[CR_LEN];
-} proxy_sign_response_t;
+#define TSA_RESPONSE_INIT { .status = UNKNOWN, .len = 0, .ts = { 0 } }
 
 /* Helper printing routines */
-void print_hex_str(const char* msg, const uint8_t* data, uint32_t len);
-void print_proxy_req(const char* msg, const proxy_request_t* req);
-void print_tsa_request(const char* msg, const tsa_request_t* req);
-void print_tsa_response(const char* msg, const tsa_response_t* rsp);
-void print_proxy_sign_response(const proxy_sign_response_t* rsp);
+void print_proxy_request(const char *msg, const proxy_request_t *req);
+void print_tsa_request(const char *msg, const tsa_request_t *req);
+void print_tsa_response(const char *msg, const tsa_response_t* rsp);
 
 #endif /* _COMMON_H_ */
