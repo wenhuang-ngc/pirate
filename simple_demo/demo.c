@@ -20,7 +20,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <regex.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/signalfd.h>
@@ -94,7 +93,7 @@ static int load_web_content_high(data_t* data, const char *path) {
         return 500;
     }
 
-    if (fread(data->buf, sbuf.st_size, 1, fp) != 1) {
+    if (fread(data->buf, 1, sbuf.st_size, fp) != (size_t) sbuf.st_size) {
         fprintf(stderr, "Failed to read %s file\n", path);
         return 500;
     }
@@ -123,7 +122,7 @@ static int load_web_content_low(data_t* data, char *path) {
         return 500;
     }
 
-    printf("Sent read request to the %s side\n", HIGH_NAME);
+    fputs("Sent read request to the HIGH_NAME side\n", stdout);
 
     num = pirate_read(HIGH_TO_LOW_CH, &rv, sizeof(rv));
     if (num != sizeof(rv)) {
@@ -179,8 +178,10 @@ static void terminate() {
 
 static void* gaps_thread(void *arg) {
     (void)arg;
-    data_t high_data;
-    data_t low_data;
+    char *begin, *end;
+    data_t data;
+
+    memset(data.buf, 0, sizeof(data.buf));
 
     while (!terminated) {
         /* Low side requests data by writing zero */
@@ -210,10 +211,10 @@ static void* gaps_thread(void *arg) {
             continue;
         }
 
-        printf("Received data request from the %s side\n", LOW_NAME);
+        fputs("Received data request from the LOW_NAME side\n", stdout);
 
         /* Read in high data */
-        rv = load_web_content_high(&high_data, path);
+        rv = load_web_content_high(&data, path);
         num = pirate_write(HIGH_TO_LOW_CH, &rv, sizeof(rv));
         if (num != sizeof(rv)) {
             fprintf(stderr, "Failed to send status code\n");
@@ -225,43 +226,38 @@ static void* gaps_thread(void *arg) {
         }
 
         /* Create filtered data (remove bold text) */
-        regmatch_t match;
-        regex_t regex;
-        int ret = regcomp(&regex, "<b>[0-9]*,</b>\\s*", REG_EXTENDED);
-        if (ret != 0) {
-            fprintf(stderr, "Failed to compile regex\n");
-            terminate();
-            continue;
+        begin = strstr(data.buf, "<b>");
+        while (begin != NULL) {
+            char *last = data.buf + data.len;
+            end = strstr(begin, "</b>");
+            if (end == NULL) {
+                *begin = (char) 0;
+                data.len -= last - begin;
+                break;
+            } else {
+                char *tail = end + 4;
+                memmove(begin, tail, last - tail);
+                data.len -= tail - begin;
+            }
+            begin = strstr(begin, "<b>");
         }
-
-        char* search = high_data.buf;
-        char* wr = low_data.buf;
-        while ((ret = regexec(&regex, search, 1, &match, 0)) == 0) {
-            memcpy(wr, search, match.rm_so);
-            wr += match.rm_so;
-            search += match.rm_eo;
-        }
-        int tail_len = high_data.len - (search - high_data.buf);
-        memcpy(wr, search, tail_len);
-        wr[tail_len] = '\0';
-        low_data.len = strnlen(low_data.buf, sizeof(low_data.buf));
 
         /* Reply back. Data length is sent first */
-        num = pirate_write(HIGH_TO_LOW_CH, &low_data.len, sizeof(low_data.len));
-        if (num != sizeof(low_data.len)) {
+        num = pirate_write(HIGH_TO_LOW_CH, &data.len, sizeof(data.len));
+        if (num != sizeof(data.len)) {
             fprintf(stderr, "Failed to send response length\n");
             terminate();
             continue;
         }
 
-        num = pirate_write(HIGH_TO_LOW_CH, &low_data.buf, low_data.len);
-        if (num != low_data.len) {
+        num = pirate_write(HIGH_TO_LOW_CH, &data.buf, data.len);
+        if (num != data.len) {
             fprintf(stderr, "Failed to send response content\n");
             terminate();
             continue;
         }
 
-        printf("Sent %d bytes to the %s side\n\n", low_data.len, LOW_NAME);
+        printf("Sent %d bytes to the %s side\n\n", data.len, LOW_NAME);
     }
     return NULL;
 }
@@ -329,7 +325,15 @@ static void* webserver_thread(void *arg) {
         }
         printf("%s served %d bytes of web content\n", NAME, data.len);
 
-        client_disconnect(&ci);
+        err = client_disconnect(&ci);
+        if (err != NULL) {
+            perror(err);
+        }
+    }
+
+    err = server_disconnect(&si);
+    if (err != NULL) {
+        perror(err);
     }
 
     return NULL;
@@ -353,7 +357,7 @@ int main_high(int argc, char* argv[]) {
     pthread_alloc_t gaps, webserver;
     webserver_t webargs;
     struct sigaction saction;
-	struct signalfd_siginfo siginfo;
+    struct signalfd_siginfo siginfo;
 
     /* Validate and parse command-line options */
     if (argc != 2) {
@@ -361,6 +365,10 @@ int main_high(int argc, char* argv[]) {
         return -1;
     }
 
+    // Block the SIGINT and SIGTERM signals in the parent thread.
+    // A new thread inherits a copy of its creator's signal mask.
+    // The main thread will wait on signalfd() to handle
+    // SIGINT and SIGTERM signals.
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
@@ -369,6 +377,9 @@ int main_high(int argc, char* argv[]) {
         return -1;
     }
 
+    // Register the empty signal handler for SIGUSR1
+    // This application uses SIGUSR1 to wakeup threads
+    // that are blocked on system calls.
     memset(&saction, 0, sizeof(struct sigaction));
     saction.sa_handler = &siguser_handler;
     if (sigaction(SIGUSR1, &saction, NULL) == -1) {
@@ -377,10 +388,10 @@ int main_high(int argc, char* argv[]) {
     }
 
     signal_fd = signalfd(-1, &mask, 0);
-	if (signal_fd < 0) {
-		perror ("signalfd");
-		return -1;
-	}
+    if (signal_fd < 0) {
+        perror ("signalfd");
+        return -1;
+    }
 
     webargs.port = atoi(argv[1]);
     webargs.level = LEVEL_HIGH;
@@ -412,7 +423,9 @@ int main_high(int argc, char* argv[]) {
         perror("read signal file descriptor");
         retval = -1;
     }
+
     terminated = 1;
+
     if (pthread_kill(gaps.tid, SIGUSR1) < 0) {
         perror("pthread_kill gaps thread");
         retval = -1;
@@ -449,7 +462,7 @@ int main_low(int argc, char* argv[]) {
     pthread_alloc_t webserver;
     webserver_t webargs;
     struct sigaction saction;
-	struct signalfd_siginfo siginfo;
+    struct signalfd_siginfo siginfo;
 
     /* Validate and parse command-line options */
     if (argc != 2) {
@@ -473,10 +486,10 @@ int main_low(int argc, char* argv[]) {
     }
 
     signal_fd = signalfd(-1, &mask, 0);
-	if (signal_fd < 0) {
-		perror("signalfd");
-		return -1;
-	}
+    if (signal_fd < 0) {
+        perror("signalfd");
+        return -1;
+    }
 
     webargs.port = atoi(argv[1]);
     webargs.level = LEVEL_LOW;
@@ -501,7 +514,9 @@ int main_low(int argc, char* argv[]) {
         perror("read signal file descriptor");
         retval = -1;
     }
+
     terminated = 1;
+
     if (pthread_kill(webserver.tid, SIGUSR1) < 0) {
         perror("pthread_kill webserver thread");
         retval = -1;

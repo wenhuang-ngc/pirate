@@ -17,16 +17,20 @@
 #define __PIRATE_PRIMITIVES_H
 
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 
 #include "shmem_buffer.h"
 
 #define PIRATE_FILENAME "/tmp/gaps.channel.%d"
 #define PIRATE_DOMAIN_FILENAME "/tmp/gaps.channel.%d.sock"
+#define PIRATE_PORT_NUMBER 26427
 #define PIRATE_SHM_NAME "/gaps.channel.%d"
 #define PIRATE_LEN_NAME 64
 
 #define PIRATE_NUM_CHANNELS 16
+
+#define PIRATE_IOV_MAX 16
 
 typedef enum {
   // The gaps channel is implemented using a FIFO special file
@@ -38,10 +42,20 @@ typedef enum {
   // named pipe. pirate_set_pathname(int, char *) must
   // be used to specify the pathname.
   DEVICE,
-  // The gaps channel is implemented by using Unix domain sockets
+  // The gaps channel is implemented by using Unix domain sockets.
   // The name of the socket is formatted with PIRATE_DOMAIN_FILENAME
   // where %d is the gaps descriptor.
   UNIX_SOCKET,
+  // The gaps channel is implemented by using TCP sockets.
+  // The port number is (26427 + d) where d is the gaps descriptor.
+  // The writer must use pirate_set_pathname(int, char *)
+  // to specify the hostname.
+  TCP_SOCKET,
+  // The gaps channel is implemented by using UDP sockets.
+  // The port number is (26427 + d) where d is the gaps descriptor.
+  // The writer must use pirate_set_pathname(int, char *)
+  // to specify the hostname.
+  UDP_SOCKET,
   // The gaps channel is implemented using shared memory.
   // This feature is disabled by default. It must be enabled
   // by setting PIRATE_SHMEM_FEATURE in CMakeLists.txt
@@ -58,8 +72,13 @@ typedef struct {
   channel_t channel;            // channel type
   char *pathname;               // optional device path
   int buffer_size;              // optional memory buffer size
-  shmem_buffer_t *shmem_buffer; // optional shared memory buffer
+  shmem_buffer_t *shmem_buffer; // optional shared memory buffer (SHMEM)
+  size_t iov_len;               // optional use readv/writev
 } pirate_channel_t;
+
+//
+// API
+//
 
 // Opens the gaps channel specified by the gaps descriptor.
 //
@@ -93,6 +112,10 @@ ssize_t pirate_write(int gd, const void *buf, size_t count);
 // pirate_close() returns zero on success.  On error,
 // -1 is returned, and errno is set appropriately.
 int pirate_close(int gd, int flags);
+
+//
+// CONFIGURATION PARAMETERS
+//
 
 // Sets the channel type for the read and write ends
 // of the gaps descriptor. Must be configured before
@@ -128,6 +151,14 @@ int pirate_set_buffer_size(int gd, int buffer_size);
 // On error -1 is returned, and errno is set appropriately.
 int pirate_get_buffer_size(int gd);
 
+// Sets the iovector length for the gaps channel.
+// On error -1 is returned, and errno is set appropriately.
+int pirate_set_iov_length(int gd, size_t iov_len);
+
+// Gets the iovector length for the gaps channel.
+// On error -1 is returned, and errno is set appropriately.
+ssize_t pirate_get_iov_length(int gd);
+
 // Invoke fcntl() on the underlying file descriptor
 int pirate_fcntl0(int gd, int flags, int cmd);
 int pirate_fcntl1_int(int gd, int flags, int cmd, int arg);
@@ -135,5 +166,13 @@ int pirate_fcntl1_int(int gd, int flags, int cmd, int arg);
 // Invoke ioctl() on the underlying device
 int pirate_ioctl0(int gd, int flags, long cmd);
 int pirate_ioctl1_int(int gd, int flags, long cmd, int arg);
+
+// Invoke getsockopt() on the underlying socket
+int pirate_getsockopt(int gd, int flags, int level, int optname, void *optval,
+                      socklen_t *optlen);
+
+// Invoke setsockopt() on the underlying socket
+int pirate_setsockopt(int gd, int flags, int level, int optname,
+                      const void *optval, socklen_t optlen);
 
 #endif //__PIRATE_PRIMITIVES_H

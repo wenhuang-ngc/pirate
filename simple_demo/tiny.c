@@ -108,17 +108,12 @@ char *client_connect(const server_t* si, client_t* ci) {
 }
 
 static char* fclose_err = "fclose";
-static char* close_child_err = "close child socket";
 
 char *client_disconnect(client_t* ci) {
-    int rv1, rv2;
-    rv1 = fclose(ci->stream);
-    rv2 = close(ci->childfd);
-    if (rv1) {
-        return fclose_err;
-    }
-    if (rv2) {
-        return close_child_err;
+    if (ci->stream) {
+        if (fclose(ci->stream)) {
+            return fclose_err;
+        }
     }
     return NULL;
 }
