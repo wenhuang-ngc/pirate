@@ -98,3 +98,11 @@ add_custom_command(
     VERBATIM
 )
 add_custom_target(TSA_TGT ALL DEPENDS ${TSA_OUT} ${TSA_CA_OUT})
+
+# Test
+set(SCRIPTS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/scripts)
+set(TS_TEST_SCRIPT ${SCRIPTS_DIR}/ts_test.sh)
+configure_file(${TS_TEST_SCRIPT} ${PROJECT_BINARY_DIR}/${LEVEL_LOW} COPYONLY)
+
+set(TS_TEST_NAME ts_test)
+add_gaps_target(${TS_TEST_NAME} ${LEVEL_LOW})

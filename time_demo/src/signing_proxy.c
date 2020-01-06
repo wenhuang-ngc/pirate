@@ -254,8 +254,12 @@ static void *sim_request_gen(void *argp) {
         entry->simulated = 1;
         request_queue_push(&proxy->queue.req, entry);
 
-        if (proxy->verbosity >= VERBOSITY_MAX) {
-            print_proxy_request("Simulated request added", &entry->req);
+        if (proxy->verbosity >= VERBOSITY_MIN) {
+            fprintf(stdout, "Simulated request added\n");
+            if (proxy->verbosity >= VERBOSITY_MAX) {
+                print_proxy_request(&entry->req);
+            }
+            fflush(stdout);
         }
     }
 
@@ -277,8 +281,12 @@ static void *request_receive(void *argp) {
             return NULL;
         }
 
-        if (proxy->verbosity >= VERBOSITY_MAX) {
-            print_proxy_request("Client request received", &req);
+
+        if (proxy->verbosity >= VERBOSITY_MIN) {
+            fprintf(stdout, "Client request received\n");
+            if (proxy->verbosity >= VERBOSITY_MAX) {
+                print_proxy_request(&req);
+            }
         }
 
         if ((entry = request_queue_pop(&proxy->queue.free)) == NULL) {
@@ -355,7 +363,11 @@ static int proxy_run(proxy_t *proxy) {
         }
 
         if (proxy->verbosity >= VERBOSITY_MIN) {
-            print_proxy_request("Processing next request", &entry->req);
+            fprintf(stdout, "Processing next request\n");
+            if (proxy->verbosity >= VERBOSITY_MAX) {
+                print_proxy_request(&entry->req);
+            }
+            fflush(stdout);
         }
         
         /* Use the timestamp service to sign */
@@ -365,7 +377,11 @@ static int proxy_run(proxy_t *proxy) {
         }
 
         if (proxy->verbosity >= VERBOSITY_MIN) {
-            print_tsa_request("Sent TSA request", &req);
+            fprintf(stdout, "TSA request sent\n");
+            if (proxy->verbosity >= VERBOSITY_MAX) {
+                print_tsa_request(&req);
+            }
+            fflush(stdout);
         }
 
         request_queue_push(&proxy->queue.free, entry);
@@ -382,7 +398,11 @@ static int proxy_run(proxy_t *proxy) {
         }
         
         if (proxy->verbosity >= VERBOSITY_MIN) {
-            print_tsa_response("TSA response received", &rsp);
+            fprintf(stdout, "TSA response received: STATUS = %s\n", 
+                ts_status_str(rsp.status));
+            if (proxy->verbosity >= VERBOSITY_MAX) {
+                print_tsa_response(&rsp);
+            }
         }
 
         if (entry->simulated != 0) {

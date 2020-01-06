@@ -24,6 +24,8 @@ typedef enum {
     UNKNOWN
 } status_t;
 
+const char *ts_status_str(status_t sts);
+
 /* Verbosity levels */
 typedef enum {
     VERBOSITY_NONE = 0,
@@ -40,13 +42,13 @@ typedef enum {
 
 /* Structure passed from the client to the proxy */
 typedef struct {
-    uint8_t digest[SHA256_DIGEST_LENGTH];
+    unsigned char digest[SHA256_DIGEST_LENGTH];
 } proxy_request_t;
 
 /* Structure passed from the proxy to the signing service */
 typedef struct {
     uint32_t len;
-    uint8_t req[MAX_REQ_LEN];
+    unsigned char req[MAX_REQ_LEN];
 } tsa_request_t;
 #define TSA_REQUEST_INIT { .len = 0, .req = { 0 }}
 
@@ -58,9 +60,8 @@ typedef struct {
 } tsa_response_t;
 #define TSA_RESPONSE_INIT { .status = UNKNOWN, .len = 0, .ts = { 0 } }
 
-/* Helper printing routines */
-void print_proxy_request(const char *msg, const proxy_request_t *req);
-void print_tsa_request(const char *msg, const tsa_request_t *req);
-void print_tsa_response(const char *msg, const tsa_response_t* rsp);
+void print_proxy_request(const proxy_request_t *req);
+void print_tsa_request(const tsa_request_t *req);
+void print_tsa_response( const tsa_response_t* rsp);
 
 #endif /* _COMMON_H_ */

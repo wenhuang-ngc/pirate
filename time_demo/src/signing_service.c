@@ -127,24 +127,28 @@ static int signer_run(signer_t *signer) {
         }
 
         if (signer->verbosity >= VERBOSITY_MIN) {
-            print_tsa_request("Request received", &req);
+            fprintf(stdout, "TSA request received\n");
+            if (signer->verbosity >= VERBOSITY_MAX) {
+                print_tsa_request(&req);
+            }
+            fflush(stdout);
         }
 
         /* Sign with a timestamp */
-        if (ts_sign(signer->ts.tsa, &req, &rsp) != 0) {
-            fprintf(stderr, "Failed to timestamp-sign the message\n");
-            return -1;
-        }
+        ts_sign(signer->ts.tsa, &req, &rsp);
 
         /* Reply */
-        rsp.status = OK;
         if (gaps_packet_write(signer->gaps.wr, &rsp, sizeof(rsp)) != 0) {
             fprintf(stderr, "Failed to send sign response\n");
             return -1;
         }
 
         if (signer->verbosity >= VERBOSITY_MIN) {
-            print_tsa_response("TSA response sent", &rsp);
+            fprintf(stdout, "TSA response sent\n");
+            if (signer->verbosity >= VERBOSITY_MAX) {
+                print_tsa_response(&rsp);
+            }
+            fflush(stdout);
         }
     }
 

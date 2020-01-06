@@ -32,7 +32,7 @@ static void print_hex_str(const char *msg, const uint8_t *data, uint32_t len) {
 }
 
 
-static const char *ts_status_str(status_t sts) {
+const char *ts_status_str(status_t sts) {
     static const char *ret = "UNKNOWN";
 
     switch (sts) {
@@ -54,22 +54,22 @@ static const char *ts_status_str(status_t sts) {
 }
 
 
-void print_proxy_request(const char *msg, const proxy_request_t *req) {
-    fprintf(stdout, "\n%s\nProxy Sign Request\n", msg);
+void print_proxy_request(const proxy_request_t *req) {
+    fprintf(stdout, "Proxy Sign Request\n");
     print_hex_str("SHA-256", req->digest, sizeof(req->digest));
     fflush(stdout);
 }
 
 
-void print_tsa_request(const char *msg, const tsa_request_t *req) {
-    fprintf(stdout, "\n%s\nTimestamp Service Sign Request:\n", msg);
+void print_tsa_request(const tsa_request_t *req) {
+    fprintf(stdout, "Timestamp Service Request:\n");
     print_hex_str("REQUEST", req->req, req->len);
     fflush(stdout);
 }
 
 
-void print_tsa_response(const char *msg, const tsa_response_t *rsp) {
-    fprintf(stdout, "\n%s\nTimestamp Sign Response:\n", msg);
+void print_tsa_response(const tsa_response_t *rsp) {
+    fprintf(stdout, "Timestamp Sign Response:\n");
     fprintf(stdout, " STATUS: %s\n", ts_status_str(rsp->status));
     if (rsp->status == OK) {
         fprintf(stdout, " LENGTH: %u\n", rsp->len);

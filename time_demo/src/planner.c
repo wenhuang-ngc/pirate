@@ -26,6 +26,7 @@ typedef struct {
     uint32_t validate;
     uint32_t save;
     uint32_t request_delay_ms;
+    const char *ca_path;
     verbosity_level_t verbosity;
 
     client_data_t data[MAX_INPUT_COUNT];
@@ -36,19 +37,24 @@ typedef struct {
 
 static client_t client_g;
 
-static struct argp_option options[]  = {
-    { "validate",  'V', NULL, 0, "Validate timestamp signatures", 0 },
-    { "save",      's', NULL, 0, "Save timestamp signatures",     0 },
-    { "req_delay", 'd', "MS", 0, "Request delay in milliseconds", 0 },
-    { "verbose",   'v', NULL, 0, "Increase verbosity level",      0 },
+const char *argp_program_version = DEMO_VERSION;
+static struct argp_option options[] = {
+    { "ca_path",   'C', "PATH", 0, "CA Path",                       0 },
+    { "validate",  'V', NULL,   0, "Validate timestamp signatures", 0 },
+    { "save",      's', NULL,   0, "Save timestamp signatures",     0 },
+    { "req_delay", 'd', "MS",   0, "Request delay in milliseconds", 0 },
+    { "verbose",   'v', NULL,   0, "Increase verbosity level",      0 },
     { 0 }
 };
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     client_t *client = (client_t*) state->input;
-    
 
     switch (key) {
+
+    case 'C':
+        client->ca_path = arg;
+        break;
 
     case 'V':
         client->validate = 1;
@@ -110,10 +116,11 @@ static void parse_args(int argc, char *argv[], client_t *client) {
         .args_doc = "[FILE] [FILE] ...",
         .doc = "Sign files with the trusted timestamp service",
         .children = NULL,
-        .help_filter  = NULL,
+        .help_filter = NULL,
         .argp_domain = NULL
     };
 
+    client->ca_path = DEFAULT_CA_PATH;
     argp_parse(&argp, argc, argv, 0, 0, client);
 }
 
@@ -200,9 +207,13 @@ static int client_run(client_t *client) {
         }
 
         if (client->verbosity >= VERBOSITY_MIN) {
-            print_proxy_request("SENT", &d->req);
-            fprintf(stdout, "%7s : %s\n", "PATH", d->path);
-            fprintf(stdout, "%7s : %u\n\n", "LENGTH", d->len);
+            fprintf(stdout, "\nRequest sent to proxy\n");
+            if (client->verbosity >= VERBOSITY_MAX) {
+                print_proxy_request(&d->req);
+                fprintf(stdout, "%7s : %s\n", "PATH", d->path);
+                fprintf(stdout, "%7s : %u\n\n", "LENGTH", d->len);
+            }
+            fflush(stdout);
         }
 
         /* Get response */
@@ -213,12 +224,17 @@ static int client_run(client_t *client) {
         }
 
         if (client->verbosity >= VERBOSITY_MIN) {
-            print_tsa_response("RECEIVED", &d->rsp);
+            fprintf(stdout, "TSA response received: STATUS = %s\n", 
+                ts_status_str(d->rsp.status));
+            if (client->verbosity >= VERBOSITY_MAX) {
+                print_tsa_response(&d->rsp);
+            }
+            fflush(stdout);
         }
 
         /* Optionally validate the signature */
         if (client->validate != 0) {
-            if (ts_validate(d->path, &d->rsp) == 0) {
+            if (ts_verify(d->path, client->ca_path, &d->rsp) == 0) {
                 fprintf(stdout, "Timestamp VALIDATED\n");
             } else {
                 fprintf(stdout, "FAILED to validate the timestamp\n");
