@@ -1,8 +1,156 @@
+#define _GNU_SOURCE
 #include <stdio.h>
+#include <string.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/signalfd.h>
 #include "common.h"
 
-#define LINE_LEN 32
+volatile sig_atomic_t terminated = 0;
 
+// Register an empty signal handler for SIGUSR1.
+// Replaces the default action for SIGUSR1
+// which is to terminate the process.
+// This application uses SIGUSR1 to wakeup threads
+// that are blocked on system calls.
+static void siguser_handler(int signo) {
+    (void)signo;
+}
+
+int gaps_app_run(gaps_app_t *ctx) {
+    sigset_t mask;
+    struct sigaction saction;
+
+    // Block the SIGINT and SIGTERM signals in the parent thread.
+    // A new thread inherits a copy of its creator's signal mask.
+    // The main thread will wait on signalfd() to handle
+    // SIGINT and SIGTERM signals.
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTERM);
+    if (pthread_sigmask(SIG_BLOCK, &mask, NULL) < 0) {
+        perror("sigprocmask");
+        return -1;
+    }
+
+    // Register the empty signal handler for SIGUSR1
+    // This application uses SIGUSR1 to wakeup threads
+    // that are blocked on system calls.
+    memset(&saction, 0, sizeof(struct sigaction));
+    saction.sa_handler = &siguser_handler;
+    if (sigaction(SIGUSR1, &saction, NULL) == -1) {
+        perror("sigaction");
+        return -1;
+    }
+
+    ctx->signal_fd = signalfd(-1, &mask, 0);
+    if (ctx->signal_fd < 0) {
+        perror("signalfd");
+        return -1;
+    }
+
+    // Initialize and open GAPS channels
+    for (int i = 0; i < MAX_APP_GAPS_CHANNELS; i++) {
+        gaps_channel_ctx_t *c = &ctx->ch[i];
+        if (c->num == -1) {
+            break;
+        }
+
+        if (pirate_set_channel_type(CLIENT_TO_PROXY, GAPS_CH_TYPE)) {
+            fprintf(stderr, "Failed to set channel type for %s\n", c->desc);
+            return -1;
+        }
+
+        if ((c->fd = pirate_open(c->num, c->flags)) == -1) {
+            fprintf(stderr, "Failed to open channel type for %s\n", c->desc);
+            return -1;
+        }
+    }
+
+    // Start threads
+    for (int i = 0; i < MAX_APP_THREADS; i++) {
+        thread_ctx_t *t = &ctx->threads[i];
+        if (t->func == NULL) {
+            break;
+        }
+
+        if (pthread_create(&t->tid, NULL, t->func, t->arg) != 0) {
+            fprintf(stderr, "Failed to start '%s' thread\n", t->name);
+            return -1;
+        }
+
+        if (pthread_setname_np(t->tid, t->name) != 0) {
+            fprintf(stderr, "Failed to set thread name '%s'\n", t->name);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int gaps_app_wait_exit(gaps_app_t *ctx) {
+    int rv = 0;
+    struct signalfd_siginfo siginfo;
+
+    if (read(ctx->signal_fd, &siginfo, sizeof(siginfo)) < 0) {
+        perror("read signal file descriptor");
+        rv = -1;
+    }
+
+    gaps_terminate();
+
+    // Close GAPS channels
+    for (int i = 0; i < MAX_APP_GAPS_CHANNELS; i++) {
+        gaps_channel_ctx_t *c = &ctx->ch[i];
+        if (c->num == -1) {
+            break;
+        }
+
+        if (c->fd != -1) {
+            pirate_close(c->fd, c->flags);
+            c->fd = -1;
+        }
+    }
+    
+    // Stop worker threads
+    for (int i = 0; i < MAX_APP_THREADS; i++) {
+        thread_ctx_t *t = &ctx->threads[i];
+        if (t->func == NULL) {
+            break;
+        }
+
+        if (pthread_kill(t->tid, SIGUSR1) < 0) {
+            fprintf(stderr, "pthread_kill '%s'", t->name);
+            rv = -1;
+        }
+    }
+
+    for (int i = 0; i < MAX_APP_THREADS; i++) {
+        thread_ctx_t *t = &ctx->threads[i];
+        if (t->func == NULL) {
+            break;
+        }
+
+        if (pthread_join(t->tid, NULL) < 0) {
+            fprintf(stderr, "pthread_join '%s'", t->name);
+            rv = -1;
+        }
+    }
+
+    return rv;
+}
+
+void gaps_terminate() {
+    terminated = 1;
+    kill(getpid(), SIGTERM);
+}
+
+int gaps_running() {
+    return terminated == 0;
+}
+
+
+#define LINE_LEN 32
 static void print_hex_str(const char *msg, const uint8_t *data, uint32_t len) {
     static const char digits[16] = {
         '0', '1', '2', '3', '4', '5', '6', '7',
@@ -32,7 +180,7 @@ static void print_hex_str(const char *msg, const uint8_t *data, uint32_t len) {
 }
 
 
-const char *ts_status_str(status_t sts) {
+const char *ts_status_str(ts_status_t sts) {
     static const char *ret = "UNKNOWN";
 
     switch (sts) {

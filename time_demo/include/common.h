@@ -1,8 +1,42 @@
 #ifndef _COMMON_H_
 #define _COMMON_H_
 
-#include "primitives.h"
+#include <pthread.h>
 #include <openssl/sha.h>
+#include "primitives.h"
+
+#define MAX_APP_THREADS         3
+#define MAX_APP_GAPS_CHANNELS   4
+typedef struct {
+    void *(*func) (void *);
+    void *arg;
+    const char *name;
+    pthread_t tid;
+} thread_ctx_t;
+
+#define THREAD_ADD(f, a, n) {.func = f, .arg = a, .name = n, .tid = 0 }
+#define THREAD_END          THREAD_ADD(NULL, NULL, NULL)
+
+typedef struct {
+    int num;
+    int flags;
+    channel_t type;
+    const char* desc;
+    int fd;
+} gaps_channel_ctx_t;
+
+typedef struct {
+    gaps_channel_ctx_t ch[MAX_APP_GAPS_CHANNELS];
+    thread_ctx_t threads[MAX_APP_THREADS];
+    int signal_fd;
+} gaps_app_t;
+#define GAPS_CHANNEL(n, f, t, d) { .num = n, .flags = f, .type = t, .desc = d}
+#define GAPS_CHANNEL_END      GAPS_CHANNEL(-1, 0, INVALID, NULL)
+
+int gaps_app_run(gaps_app_t *ctx);
+int gaps_app_wait_exit(gaps_app_t *ctx);
+void gaps_terminate();
+int gaps_running();
 
 /* GAPS channel assignments */
 typedef enum {
@@ -12,19 +46,14 @@ typedef enum {
     SIGNER_TO_PROXY = 3
 } demo_channel_t;
 
-typedef struct {
-    int wr;
-    int rd;
-} gaps_channel_pair_t;
-
 typedef enum {
     OK,
     BUSY,
     ERR,
     UNKNOWN
-} status_t;
+} ts_status_t;
 
-const char *ts_status_str(status_t sts);
+const char *ts_status_str(ts_status_t sts);
 
 /* Verbosity levels */
 typedef enum {
@@ -44,6 +73,7 @@ typedef enum {
 typedef struct {
     unsigned char digest[SHA256_DIGEST_LENGTH];
 } proxy_request_t;
+#define PROXY_REQUEST_INIT { .digest = { 0 } }
 
 /* Structure passed from the proxy to the signing service */
 typedef struct {
@@ -54,14 +84,14 @@ typedef struct {
 
 /* Timestamp response */
 typedef struct {
-    status_t status;
+    ts_status_t status;
     uint32_t len;
-    uint8_t ts[MAX_TS_LEN];
+    unsigned char ts[MAX_TS_LEN];
 } tsa_response_t;
 #define TSA_RESPONSE_INIT { .status = UNKNOWN, .len = 0, .ts = { 0 } }
 
 void print_proxy_request(const proxy_request_t *req);
 void print_tsa_request(const tsa_request_t *req);
-void print_tsa_response( const tsa_response_t* rsp);
+void print_tsa_response(const tsa_response_t* rsp);
 
 #endif /* _COMMON_H_ */

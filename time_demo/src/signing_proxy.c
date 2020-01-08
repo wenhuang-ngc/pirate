@@ -11,8 +11,7 @@
 
 /* Default values */
 #define DEFAULT_POLL_PERIOD_MS      1000
-#define DEFAULT_REQUEST_QUEUE_LEN   16
-#define TSA_REQ_RAND_LEN            32
+#define DEFAULT_REQUEST_QUEUE_LEN   4
 
 typedef struct proxy_request_entry_s {
     proxy_request_t req;
@@ -25,30 +24,18 @@ typedef struct {
     STAILQ_HEAD(queuehead, proxy_request_entry_s) head;
 } request_queue_t;
 
-typedef struct {
-    volatile int running;
-    pthread_t tid;
-} work_thread_t;
 
 typedef struct {
     uint32_t poll_period_ms;
     uint32_t queue_len;
     verbosity_level_t verbosity;
 
-    struct {
-        work_thread_t sim;
-        work_thread_t rx;
-    } threads;
+    gaps_app_t app;
 
     struct {
         request_queue_t free;
         request_queue_t req;
     } queue;
-
-    struct {
-        gaps_channel_pair_t client;
-        gaps_channel_pair_t signer;
-    } gaps;
 } proxy_t;
 
 /* Command-line options */
@@ -98,74 +85,8 @@ static void parse_args(int argc, char *argv[], proxy_t *proxy) {
         .argp_domain = NULL
     };
 
-    proxy->poll_period_ms = DEFAULT_POLL_PERIOD_MS;
     argp_parse(&argp, argc, argv, 0, 0, proxy);
 }
-
-
-/* Initialize GAPS channels */
-static int gaps_init(proxy_t *proxy) {
-    proxy->gaps.client.wr = proxy->gaps.client.rd = -1;
-    proxy->gaps.signer.wr = proxy->gaps.signer.rd = -1;
-
-    if ((pirate_set_channel_type(CLIENT_TO_PROXY, GAPS_CH_TYPE) != 0) ||
-        (pirate_set_channel_type(PROXY_TO_CLIENT, GAPS_CH_TYPE) != 0) ||
-        (pirate_set_channel_type(PROXY_TO_SIGNER, GAPS_CH_TYPE) != 0) ||
-        (pirate_set_channel_type(SIGNER_TO_PROXY, GAPS_CH_TYPE) != 0)) {
-        perror("Failed to set GAPS channel type\n");
-        return -1;
-    }
-   
-    proxy->gaps.client.rd = pirate_open(CLIENT_TO_PROXY, O_RDONLY);
-    if (proxy->gaps.client.rd == -1) {
-        perror("Failed to open client to proxy GAPS RD channel\n");
-        return -1;
-    }
-
-    proxy->gaps.client.wr = pirate_open(PROXY_TO_CLIENT, O_WRONLY);
-    if (proxy->gaps.client.wr == -1) {
-        perror("Failed to open proxy to client GAPS WR channel\n");
-        return -1;
-    }
-
-    proxy->gaps.signer.wr = pirate_open(PROXY_TO_SIGNER, O_WRONLY);
-    if (proxy->gaps.signer.wr == -1) {
-        perror("Failed to open proxy to timestamp service GAPS WR channel\n");
-        return -1;
-    }
-
-    proxy->gaps.signer.rd = pirate_open(SIGNER_TO_PROXY, O_RDONLY);
-    if (proxy->gaps.signer.rd == -1) {
-        perror("Failed to open timestamp service to #endifproxy GAPS RD channel\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-/* Close GAPS channels */
-static void gaps_term(proxy_t *proxy) {
-    if (proxy->gaps.client.rd != -1) {
-        pirate_close(proxy->gaps.client.rd, O_RDONLY);
-        proxy->gaps.client.rd = -1;
-    }
-
-    if (proxy->gaps.client.wr != -1) {
-        pirate_close(proxy->gaps.client.wr, O_WRONLY);
-        proxy->gaps.client.wr = -1;
-    }
-
-    if (proxy->gaps.signer.wr != -1) {
-        pirate_close(proxy->gaps.signer.wr, O_WRONLY);
-        proxy->gaps.signer.wr = -1;
-    }
-
-    if (proxy->gaps.signer.rd != -1) {
-        pirate_close(proxy->gaps.signer.rd, O_RDONLY);
-        proxy->gaps.signer.rd = -1;
-    }
-}
-
 
 /* Push an intem on a queue */
 static void request_queue_push(request_queue_t *queue, 
@@ -216,6 +137,25 @@ static void request_queue_term(request_queue_t *queue) {
     pthread_mutex_destroy(&queue->lock);
 }
 
+/* Initialize proxy queues */
+static int queues_init(proxy_t *proxy) {
+    /* Initialize request queues */
+    if ((request_queue_init(&proxy->queue.free, proxy->queue_len) != 0) ||
+        (request_queue_init(&proxy->queue.req, 0) != 0)) {
+        fprintf(stderr, "Failed to initialize request queues\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Release proxy queues */
+static void queues_term(proxy_t *proxy) {
+    /* Release request queues */
+    request_queue_term(&proxy->queue.free);
+    request_queue_term(&proxy->queue.req);
+}
+
 
 /* Thread for generating simulated requests */
 static void *sim_request_gen(void *argp) {
@@ -228,7 +168,7 @@ static void *sim_request_gen(void *argp) {
         .tv_nsec = gen_period_ns % 1000000000
     };
 
-    while (proxy->threads.sim.running) {
+    while (gaps_running()) {
         nanosleep(&ts, NULL);
 
         proxy_request_entry_t *entry = NULL;
@@ -243,12 +183,14 @@ static void *sim_request_gen(void *argp) {
         /* Generate simulated request and place it on the request queue */
         if ((entry = request_queue_pop(&proxy->queue.free)) == NULL) {
             fprintf(stderr, "Failed to pop a request entry\n");
-            return NULL;
+            gaps_terminate();
+            continue;
         }
 
         if (ts_create_request(NULL, &entry->req) != 0) {
             perror("Failed to generate random request data\n");
-            return NULL;
+            gaps_terminate();
+            continue;
         }
 
         entry->simulated = 1;
@@ -269,18 +211,21 @@ static void *sim_request_gen(void *argp) {
 
 /* Sign request receive thread */
 static void *request_receive(void *argp) {
-    proxy_t *proxy = (proxy_t*) argp;
+    proxy_t *proxy = (proxy_t *) argp;
     ssize_t len;
     proxy_request_t req;
     proxy_request_entry_t *entry = NULL;
+    const gaps_channel_ctx_t *client_rd = &proxy->app.ch[0];
 
-    while (proxy->threads.rx.running) {
-        len = gaps_packet_read(proxy->gaps.client.rd, &req, sizeof(req));
+    while (gaps_running()) {
+        len = gaps_packet_read(client_rd->fd, &req, sizeof(req));
         if (len != sizeof(req)) {
-            fprintf(stderr, "Failed to receive request\n");
-            return NULL;
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to receive request\n");
+                gaps_terminate();
+            }
+            continue;
         }
-
 
         if (proxy->verbosity >= VERBOSITY_MIN) {
             fprintf(stdout, "Client request received\n");
@@ -297,8 +242,11 @@ static void *request_receive(void *argp) {
             };
 
             if (gaps_packet_write(PROXY_TO_CLIENT, &rsp, sizeof(rsp)) != 0) {
-                perror("Failed to send busy response\n");
-                return NULL;
+                if (gaps_running()) {
+                    fprintf(stderr, "Failed to send busy response\n");
+                    gaps_terminate();
+                }
+                continue;
             }
 
             if (proxy->verbosity >= VERBOSITY_MIN) {
@@ -315,51 +263,34 @@ static void *request_receive(void *argp) {
     return NULL;
 }
 
-/* Start a worker thread */
-static int start_thread(work_thread_t *t, void *(*func) (void *), void *arg) {
-    t->running = 1;
-    int sts = pthread_create(&t->tid, NULL, func, arg);
-    if (sts != 0) {
-        perror("Failed to start thread\n");
-        t->running = 0;
-        return -1;
-    }
-
-    return 0;
-}
-
-/* Stop a worker thread */
-static void stop_thread(work_thread_t *t) {
-    if (t->running == 0) {
-        return;
-    }
-
-    t->running = 0;
-    pthread_join(t->tid, NULL);
-}
-
 
 /* Proxy request polling and signing */
-static int proxy_run(proxy_t *proxy) {
-    int sts;
-    ssize_t len;
+static void *proxy_thread(void *arg) {
+    proxy_t *proxy = (void *)arg;
+    int sts = -1;
+    ssize_t len = 0;
     tsa_request_t req = TSA_REQUEST_INIT;
     tsa_response_t rsp = TSA_RESPONSE_INIT;
     proxy_request_entry_t *entry = NULL;
+
+    const gaps_channel_ctx_t *client_wr = &proxy->app.ch[1];
+    const gaps_channel_ctx_t *signer_wr = &proxy->app.ch[2];
+    const gaps_channel_ctx_t *signer_rd = &proxy->app.ch[3];
 
     const struct timespec ts = {
         .tv_sec  = proxy->poll_period_ms / 1000,
         .tv_nsec = (proxy->poll_period_ms % 1000) * 1000000
     };
 
-    while (1) {
+    while (gaps_running()) {
         /* Periodically poll */
         nanosleep(&ts, NULL);
 
         /* Get a request, there always should be one */
         if ((entry = request_queue_pop(&proxy->queue.req)) == NULL) {
             fprintf(stderr, "Request queue empty\n");
-            return -1;
+            gaps_terminate();
+            continue;
         }
 
         if (proxy->verbosity >= VERBOSITY_MIN) {
@@ -373,7 +304,8 @@ static int proxy_run(proxy_t *proxy) {
         /* Use the timestamp service to sign */
         if (ts_create_query(&entry->req, &req) != 0) {
             fprintf(stderr, "Failed to generate timestamp sign query\n");
-            return -1;
+            gaps_terminate();
+            continue;
         }
 
         if (proxy->verbosity >= VERBOSITY_MIN) {
@@ -385,16 +317,22 @@ static int proxy_run(proxy_t *proxy) {
         }
 
         request_queue_push(&proxy->queue.free, entry);
-        sts = gaps_packet_write(proxy->gaps.signer.wr, &req, sizeof(req));
+        sts = gaps_packet_write(signer_wr->fd, &req, sizeof(req));
         if (sts != 0) {
-            fprintf(stderr, "Failed to send timestamp request\n");
-            return -1;
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to send timestamp request\n");
+                gaps_terminate();
+            }
+            continue;
         }
 
-        len = gaps_packet_read(proxy->gaps.signer.rd, &rsp, sizeof(rsp));
+        len = gaps_packet_read(signer_rd->fd, &rsp, sizeof(rsp));
         if (len != sizeof(rsp)) {
-            fprintf(stderr, "Failed to receive timestamp response\n");
-            return -1;
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to receive timestamp response\n");
+                gaps_terminate();
+            }
+            continue;
         }
         
         if (proxy->verbosity >= VERBOSITY_MIN) {
@@ -409,77 +347,57 @@ static int proxy_run(proxy_t *proxy) {
             continue;
         }
 
-        sts = gaps_packet_write(proxy->gaps.client.wr, &rsp, sizeof(rsp));
+        sts = gaps_packet_write(client_wr->fd, &rsp, sizeof(rsp));
         if (sts != 0) {
-            perror("Failed to send response");
-            return -1;
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to send response\n");
+                gaps_terminate();
+            }
+            continue;
         }
     }
 
-    return 0;   /* Should never get here */
-}
-
-/* Start the proxy */
-static int proxy_init(proxy_t *proxy) {
-    /* Initialize GAPS channels */
-    if (gaps_init(proxy) != 0) {
-        fprintf(stderr, "Failed to initialize GAPS channels\n");
-        return -1;
-    }
-
-    /* Initialize request queues */
-    if ((request_queue_init(&proxy->queue.free, 4) != 0) ||
-        (request_queue_init(&proxy->queue.req, 0) != 0)) {
-        fprintf(stderr, "Failed to initialize request queues\n");
-        return -1;
-    }
-
-    /* Start worker threads */
-    if ((start_thread(&proxy->threads.sim, sim_request_gen, proxy) != 0) ||
-        (start_thread(&proxy->threads.rx, request_receive, proxy) != 0)) {
-        fprintf(stderr, "Failed to start worker threads\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-/* Release proxy resources */
-static void proxy_term(proxy_t *proxy) {
-    /* Close GAPS channels */
-    gaps_term(proxy);
-
-    /* Stop worker threads */ 
-    stop_thread(&proxy->threads.sim);
-    stop_thread(&proxy->threads.rx);
-
-    /* Release request queues */
-    request_queue_term(&proxy->queue.free);
-    request_queue_term(&proxy->queue.req);
+    return NULL;
 }
 
 
 int main(int argc, char *argv[]) {
+    proxy_t proxy = {
+        .poll_period_ms = DEFAULT_POLL_PERIOD_MS,
+        .queue_len = DEFAULT_REQUEST_QUEUE_LEN,
+        .verbosity = VERBOSITY_NONE,
+
+        .app = {
+            .threads = {
+                THREAD_ADD(sim_request_gen, &proxy, "sim_request"),
+                THREAD_ADD(request_receive, &proxy, "rx_request"),
+                THREAD_ADD(proxy_thread, &proxy, "proxy"),
+            },
+
+            .ch = {
+                GAPS_CHANNEL(CLIENT_TO_PROXY, O_RDONLY, PIPE, "client->proxy"),
+                GAPS_CHANNEL(PROXY_TO_CLIENT, O_WRONLY, PIPE, "client<-proxy"),
+                GAPS_CHANNEL(PROXY_TO_SIGNER, O_WRONLY, PIPE, "proxy->signer"),
+                GAPS_CHANNEL(SIGNER_TO_PROXY, O_RDONLY, PIPE, "proxy<-signer")
+            }
+        }
+    };
+
     /* Parse command-line options */
-    proxy_t proxy;
-    memset(&proxy, 0, sizeof(proxy));
     parse_args(argc, argv, &proxy);
 
-    /* Initialize the proxy */
-    if (proxy_init(&proxy) != 0) {
-        fprintf(stderr, "Failed to start the signing proxy\n");
-        proxy_term(&proxy);
+    if (queues_init(&proxy) != 0) {
+        fprintf(stderr, "Failed to initialize proxy queues\n");
         return -1;
     }
 
-    /* Run the proxy */
-    if (proxy_run(&proxy) != 0) {
-        fprintf(stderr, "Proxy error\n");
-        proxy_term(&proxy);
+    if (gaps_app_run(&proxy.app) != 0) {
+        fprintf(stderr, "Failed to start the signing proxy\n");
         return -1;
     }
 
     /* Cleanup */
-    proxy_term(&proxy);
-    return 0;
+    int rv = gaps_app_wait_exit(&proxy.app);
+    queues_term(&proxy);
+    return rv;
 }

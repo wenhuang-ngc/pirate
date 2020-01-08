@@ -1,5 +1,6 @@
 #include <argp.h>
 #include <stdio.h>
+#include <string.h>
 #include "gaps_packet.h"
 #include "common.h"
 #include "ts_crypto.h"
@@ -13,10 +14,8 @@ typedef struct {
         void *tsa;
     } ts;
 
-    gaps_channel_pair_t gaps;
+    gaps_app_t app;
 } signer_t;
-
-signer_t signer_g;
 
 /* Command-line options */
 const char *argp_program_version = DEMO_VERSION;
@@ -54,7 +53,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     return 0;
 }
 
-
 static void parse_args(int argc, char *argv[], signer_t *signer) {
     struct argp argp = {
         .options = options,
@@ -66,64 +64,28 @@ static void parse_args(int argc, char *argv[], signer_t *signer) {
         .argp_domain = NULL
     };
 
-    /* Default values */
-    signer->ts.conf_file = DEFAULT_CONF_PATH;
-    signer->ts.conf_sect = DEFAULT_CONF_SECTION;
     argp_parse(&argp, argc, argv, 0, 0, signer);
 }
 
-
-/* Initialize GAPS channels */
-static int gaps_init(signer_t *signer) {
-    signer->gaps.wr = signer->gaps.rd = -1;
-
-    if ((pirate_set_channel_type(PROXY_TO_SIGNER, GAPS_CH_TYPE) != 0) ||
-        (pirate_set_channel_type(SIGNER_TO_PROXY, GAPS_CH_TYPE) != 0)) {
-        perror("Failed to set GAPS channel type\n");
-        return -1;
-    }
-
-    signer->gaps.rd = pirate_open(PROXY_TO_SIGNER, O_RDONLY);
-    if (signer->gaps.rd == -1) {
-        perror("Failed to open proxy to timestamp service GAPS RD channel\n");
-        return -1;
-    }
-
-    signer->gaps.wr = pirate_open(SIGNER_TO_PROXY, O_WRONLY);
-    if (signer->gaps.wr == -1) {
-        perror("Failed to open timestamp service to proxy GAPS WR channel\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-/* Close GAPS channels */
-static void gaps_term(signer_t *signer) {
-    if (signer->gaps.rd != -1) {
-        pirate_close(signer->gaps.rd, O_RDONLY);
-        signer->gaps.rd = -1;
-    }
-
-    if (signer->gaps.wr != -1) {
-        pirate_close(signer->gaps.wr, O_WRONLY);
-        signer->gaps.wr = -1;
-    }
-}
-
-
 /* Run the signer */
-static int signer_run(signer_t *signer) {
-    ssize_t len;
-    tsa_request_t req;
-    tsa_response_t rsp;
+static void *signer_thread(void *arg) {
+    signer_t *signer = (signer_t *) arg;
+    ssize_t len = 0;
+    tsa_request_t req = TSA_REQUEST_INIT;
+    tsa_response_t rsp = TSA_RESPONSE_INIT;
 
-    while (1) {
+    const gaps_channel_ctx_t *proxy_rd = &signer->app.ch[0];
+    const gaps_channel_ctx_t *proxy_wr = &signer->app.ch[1];
+
+    while (gaps_running()) {
         /* Receive sign request */
-        len = gaps_packet_read(signer->gaps.rd, &req, sizeof(req));
+        len = gaps_packet_read(proxy_rd->fd, &req, sizeof(req));
         if (len != sizeof(req)) {
-            fprintf(stderr, "Failed to receive sign request\n");
-            return -1;
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to receive sign request\n");
+                gaps_terminate();
+            }
+            continue;
         }
 
         if (signer->verbosity >= VERBOSITY_MIN) {
@@ -138,9 +100,12 @@ static int signer_run(signer_t *signer) {
         ts_sign(signer->ts.tsa, &req, &rsp);
 
         /* Reply */
-        if (gaps_packet_write(signer->gaps.wr, &rsp, sizeof(rsp)) != 0) {
-            fprintf(stderr, "Failed to send sign response\n");
-            return -1;
+        if (gaps_packet_write(proxy_wr->fd, &rsp, sizeof(rsp)) != 0) {
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to send sign response\n");
+                gaps_terminate();
+            }
+            continue;
         }
 
         if (signer->verbosity >= VERBOSITY_MIN) {
@@ -155,54 +120,57 @@ static int signer_run(signer_t *signer) {
     return 0;  /* Should never get here */
 }
 
-/* Initialize the signer */
-static int signer_init(signer_t *signer) {
-    /* Initialize GAPS channels */
-    if (gaps_init(signer) != 0) {
-        fprintf(stderr, "Failed to initialize GAPS channels\n");
-        return -1;
-    }
-
-    /* Initialize the timestamp authority */
-    signer->ts.tsa = ts_init(signer->ts.conf_file, signer->ts.conf_sect);
-    if (signer->ts.tsa == NULL) {
-        fprintf(stderr, "Failed to initialize timestamp context\n");
-        return -1;
-    }
-
-    return 0;
-}
-
 /* Release signer resources */
 static void signer_term(signer_t *signer) {
     /* Terminate the timestamp authority */
     ts_term(signer->ts.tsa);
     signer->ts.tsa = NULL;
-
-    /* Close GAPS channels */
-    gaps_term(signer);
 }
 
 
 int main(int argc, char *argv[]) {
-    /* Parse command-line options */
-    parse_args(argc, argv, &signer_g);
+    signer_t signer = {
+        .verbosity = VERBOSITY_NONE,
+        
+        .ts = {
+            .conf_file = DEFAULT_CONF_PATH,
+            .conf_sect = DEFAULT_CONF_SECTION
+        },
 
-    /* Initialize the signer */
-    if (signer_init(&signer_g) != 0) {
-        fprintf(stderr, "Failed to initialize the signer\n");
-        signer_term(&signer_g);
+        .app = {
+            .threads = {
+                THREAD_ADD(signer_thread, &signer, "ts_signer"),
+                THREAD_END
+            },
+
+            .ch = {
+                GAPS_CHANNEL(PROXY_TO_SIGNER, O_RDONLY, PIPE, "proxy->signer"),
+                GAPS_CHANNEL(SIGNER_TO_PROXY, O_WRONLY, PIPE, "proxy<-signer"),
+                GAPS_CHANNEL_END
+            }
+        }
+    };
+
+    parse_args(argc, argv, &signer);
+
+    /* Initialize signer crypto resources */
+    signer.ts.tsa = ts_init(signer.ts.conf_file, signer.ts.conf_sect);
+    if (signer.ts.tsa == NULL) {
+        fprintf(stderr, "Failed to initialize timestamp context\n");
         return -1;
     }
 
     /* Run the signer */
-    if (signer_run(&signer_g) != 0) {
-        fprintf(stderr, "Failed to run the signer\n");
-        signer_term(&signer_g);
+    if (gaps_app_run(&signer.app) != 0) {
+        fprintf(stderr, "Failed to start the signing proxy\n");
+        signer_term(&signer);
         return -1;
     }
 
-    /* Release signer resources */
-    signer_term(&signer_g);
-    return 0;
+    int rv = gaps_app_wait_exit(&signer.app);
+    
+    /* Release signer crypto resources */
+    ts_term(signer.ts.tsa);
+    signer.ts.tsa = NULL;
+    return rv;
 }

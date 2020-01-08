@@ -1,6 +1,7 @@
 #include <argp.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -17,33 +18,28 @@
 typedef struct {
     char path[PATH_MAX];
     uint32_t len;
-
-    proxy_request_t req;
-    tsa_response_t rsp;
 } client_data_t;
 
 typedef struct {
+    verbosity_level_t verbosity;
     uint32_t validate;
-    uint32_t save;
     uint32_t request_delay_ms;
     const char *ca_path;
-    verbosity_level_t verbosity;
+    const char *tsr_dir;
 
-    client_data_t data[MAX_INPUT_COUNT];
+    gaps_app_t app;
+
     uint32_t count;
-
-    gaps_channel_pair_t gaps;
+    client_data_t data[MAX_INPUT_COUNT];
 } client_t;
-
-static client_t client_g;
 
 const char *argp_program_version = DEMO_VERSION;
 static struct argp_option options[] = {
-    { "ca_path",   'C', "PATH", 0, "CA Path",                       0 },
-    { "validate",  'V', NULL,   0, "Validate timestamp signatures", 0 },
-    { "save",      's', NULL,   0, "Save timestamp signatures",     0 },
-    { "req_delay", 'd', "MS",   0, "Request delay in milliseconds", 0 },
-    { "verbose",   'v', NULL,   0, "Increase verbosity level",      0 },
+    { "ca_path",   'C', "PATH", 0, "CA Path",                                  0 },
+    { "validate",  'V', NULL,   0, "Validate timestamp signatures",            0 },
+    { "save",      's', "PATH", 0, "Save timestamp signatures to a directory", 0 },
+    { "req_delay", 'd', "MS",   0, "Request delay in milliseconds",            0 },
+    { "verbose",   'v', NULL,   0, "Increase verbosity level",                 0 },
     { 0 }
 };
 
@@ -61,7 +57,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
         break;
 
     case 's':
-        client->save = 1;
+        client->tsr_dir = arg;
         break;
 
     case 'd':
@@ -120,96 +116,89 @@ static void parse_args(int argc, char *argv[], client_t *client) {
         .argp_domain = NULL
     };
 
-    client->ca_path = DEFAULT_CA_PATH;
     argp_parse(&argp, argc, argv, 0, 0, client);
 }
 
 
-/* Initialize GAPS channels */
-static int gaps_init(client_t *client) {
-    client->gaps.wr = client->gaps.rd = -1;
-
-    if ((pirate_set_channel_type(CLIENT_TO_PROXY, GAPS_CH_TYPE) != 0) || 
-        (pirate_set_channel_type(PROXY_TO_CLIENT, GAPS_CH_TYPE) != 0)) {
-        perror("Failed to set GAPS channel type\n");
-        return -1;
-    }
-
-    client->gaps.wr = pirate_open(CLIENT_TO_PROXY, O_WRONLY);
-    if (client->gaps.wr == -1 ) {
-        perror("Failed to open client to proxy WR channel\n");
-        return -1;
-    }
-
-    client->gaps.rd = pirate_open(PROXY_TO_CLIENT, O_RDONLY);
-    if (client->gaps.rd == -1) {
-        perror("Failed to open proxy to client RD channel\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-/* Close GAPS channels */
-static void gaps_term(client_t *client) {
-    if (client->gaps.wr != -1) {
-        pirate_close(client->gaps.wr, O_WRONLY);
-        client->gaps.wr = -1;
-    }
-    
-    if (client->gaps.rd != -1) {
-        pirate_close(client->gaps.rd, O_RDONLY);
-        client->gaps.rd = -1;
-    }
-}
-
-
 /* Save timestamp sign response to a file */
-static int client_save_ts_response(const client_data_t *data, uint32_t idx) {
-    char path[PATH_MAX];
+static int save_ts_response(const char *in_path, const char *out_dir, 
+    uint32_t idx, const tsa_response_t* rsp ) {
+    int rv = 0;
+    const char *in_file = in_path + strlen(in_path);
+    char out_path[PATH_MAX];
+    FILE *f_out = NULL;
 
-    if ((data->rsp.status) != OK || (data->rsp.len == 0)) {
+    if ((out_dir == NULL) || 
+        (rsp->status != OK) || 
+        (rsp->status > sizeof(rsp->ts))) {
         return 0;
     }
 
-    snprintf(path, sizeof(path)-1, "%s_%02u.tsr", data->path, idx);
+    do {
+        in_file--;
+    } while((in_path < in_file) && (*(in_file - 1) != '/'));
 
-    fprintf(stdout, " === SAVE === %s\n", path);
-    return 0;
+    snprintf(out_path, sizeof(out_path) - 1, "%s/%04u_%s.tsr", 
+        out_dir, idx, in_file);
+
+    if ((f_out = fopen(out_path, "wb")) == NULL) {
+        perror("Failed to open TSR output file\n");
+        return -1;
+    }
+
+    if (fwrite(rsp->ts, rsp->len, 1, f_out) != 1) {
+        perror("Failed to open TSR content\n");
+        rv = -1;
+    }
+
+    fclose(f_out);
+    return rv;
 }
 
 
 /* Acquire trusted timestamps */
-static int client_run(client_t *client) {
+static void *client_thread(void *arg) {
+    client_t *client = (client_t *)arg;
+    int idx = 0;
+
+    proxy_request_t req = PROXY_REQUEST_INIT;
+    tsa_response_t rsp = TSA_RESPONSE_INIT;
+    const gaps_channel_ctx_t *proxy_wr = &client->app.ch[0];
+    const gaps_channel_ctx_t *proxy_rd = &client->app.ch[1];
+
     const struct timespec ts = {
         .tv_sec = client->request_delay_ms / 1000,
         .tv_nsec = (client->request_delay_ms % 1000) * 1000000
     };
-    
-    for (uint32_t i = 0; i < client->count; i++) {
-        client_data_t *d = &client->data[i];
+
+    while (gaps_running()) {
+        client_data_t *d = &client->data[idx % client->count];
 
         if (client->request_delay_ms != 0) {
             nanosleep(&ts, NULL);
         }
 
         /* Compose a request */
-        if (ts_create_request(d->path, &d->req) != 0) {
+        if (ts_create_request(d->path, &req) != 0) {
             fprintf(stderr, "Failed to generate TS request\n");
-            return -1;
+            gaps_terminate();
+            continue;
         }
 
         /* Send request */
-        int sts = gaps_packet_write(client->gaps.wr, &d->req, sizeof(d->req));
+        int sts = gaps_packet_write(proxy_wr->fd, &req, sizeof(req));
         if (sts == -1) {
-            fprintf(stderr, "Failed to send signing request to proxy\n");
-            return -1;
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to send signing request to proxy\n");
+                gaps_terminate();
+            }
+            continue;
         }
 
         if (client->verbosity >= VERBOSITY_MIN) {
             fprintf(stdout, "\nRequest sent to proxy\n");
             if (client->verbosity >= VERBOSITY_MAX) {
-                print_proxy_request(&d->req);
+                print_proxy_request(&req);
                 fprintf(stdout, "%7s : %s\n", "PATH", d->path);
                 fprintf(stdout, "%7s : %u\n\n", "LENGTH", d->len);
             }
@@ -217,24 +206,27 @@ static int client_run(client_t *client) {
         }
 
         /* Get response */
-        sts = gaps_packet_read(client->gaps.rd, &d->rsp, sizeof(d->rsp));
-        if (sts != sizeof(d->rsp)) {
-            fprintf(stderr, "Failed to receive response\n");
-            return -1;
+        sts = gaps_packet_read(proxy_rd->fd, &rsp, sizeof(rsp));
+        if (sts != sizeof(rsp)) {
+            if (gaps_running()) {
+                fprintf(stderr, "Failed to receive response\n");
+                gaps_terminate();
+            }
+            continue;
         }
 
         if (client->verbosity >= VERBOSITY_MIN) {
             fprintf(stdout, "TSA response received: STATUS = %s\n", 
-                ts_status_str(d->rsp.status));
+                ts_status_str(rsp.status));
             if (client->verbosity >= VERBOSITY_MAX) {
-                print_tsa_response(&d->rsp);
+                print_tsa_response(&rsp);
             }
             fflush(stdout);
         }
 
         /* Optionally validate the signature */
         if (client->validate != 0) {
-            if (ts_verify(d->path, client->ca_path, &d->rsp) == 0) {
+            if (ts_verify(d->path, client->ca_path, &rsp) == 0) {
                 fprintf(stdout, "Timestamp VALIDATED\n");
             } else {
                 fprintf(stdout, "FAILED to validate the timestamp\n");
@@ -243,36 +235,48 @@ static int client_run(client_t *client) {
         }
 
         /* Optionally save the timestamp signature */
-        if (client->save != 0) {
-            if (client_save_ts_response(d, i) != 0) {
-                fprintf(stderr, "Failed to save timestamp response\n");
-            }
+        if (save_ts_response(d->path, client->tsr_dir, idx, &rsp) != 0) {
+            fprintf(stderr, "Failed to save timestamp response\n");
+            gaps_terminate();
+            continue;
         }
+
+        idx++;
     }
 
     return 0;
 }
 
-
 int main(int argc, char *argv[]) {
-    /* Parse command-line options */
-    parse_args(argc, argv, &client_g);
+    client_t client = {
+        .verbosity = VERBOSITY_NONE,
+        .validate = 0,
+        .request_delay_ms = 0,
+        .ca_path = DEFAULT_CA_PATH,
+        .tsr_dir = NULL,
 
-    /* Initialize client resources */
-    if (gaps_init(&client_g) != 0) {
-        fprintf(stderr, "Failed to initialize GAPS resources\n");
-        gaps_term(&client_g);
+        .app = {
+            .threads = {
+                THREAD_ADD(client_thread, &client, "ts_client"),
+                THREAD_END
+            },
+
+            .ch = {
+                GAPS_CHANNEL(CLIENT_TO_PROXY, O_WRONLY, PIPE, "client->proxy"),
+                GAPS_CHANNEL(PROXY_TO_CLIENT, O_RDONLY, PIPE, "client<-proxy"),
+                GAPS_CHANNEL_END
+            }
+        },
+
+        .count = 0
+    };
+
+    parse_args(argc, argv, &client);
+
+    if (gaps_app_run(&client.app) != 0) {
+        fprintf(stderr, "Failed to initialize the timestamp client\n");
         return -1;
     }
 
-    /* Acquire trusted timestamps */
-    if (client_run(&client_g) != 0) {
-        fprintf(stderr, "Failed to acquire trusted timestamps\n");
-        gaps_term(&client_g);
-        return -1;
-    }
-
-    /* Release client resources */
-    gaps_term(&client_g);
-    return 0;
+    return gaps_app_wait_exit(&client.app);;
 }
