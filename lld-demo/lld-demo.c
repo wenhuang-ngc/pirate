@@ -1,13 +1,13 @@
-char
-//__attribute__((sensitive(foo_sensitivity)))
-foo_msg[] = "foo\n";
+char foo_msg[]
+//__attribute__((capability(foo_sensitivity)))
+    = "foo\n";
 
-static char
-bar_msg[] = "bar\n";
+static char bar_msg[]
+    = "bar\n";
 
-//__attribute__((needs_capability(foo_capability)))
+//__attribute__((capability(foo_capability)))
 //__attribute__((enclave_main(foo_enclave)))
-int foo_main(void) {
+int main(void) {
     __asm__(
         "mov $1, %%rax\n\t"
         "mov $1, %%rdi\n\t"
@@ -21,7 +21,7 @@ int foo_main(void) {
     return 0;
 }
 
-//__attribute__((sensitive(common_sensitivity)))
+//__attribute__((capability(common_sensitivity)))
 //__attribute__((enclave_only(bar_enclave)))
 static void bar_sub(void) {
     __asm__(
@@ -56,14 +56,14 @@ int bar_main(void) {
 #pragma enclave declare(enclave_foo)
 #pragma enclave declare(enclave_bar)
 
-#pragma enclave trusted(enclave_foo, foo_sensitivity)
-#pragma enclave trusted(enclave_bar, bar_sensitivity)
-#pragma enclave capable(enclave_foo, foo_capability)
+#pragma capability declare(common_sensitivity)
+#pragma capability declare(foo_sensitivity, common_sensitivity)
+#pragma capability declare(bar_sensitivity, common_sensitivity)
+#pragma capability declare(foo_capability)
 
-#pragma declare sensitivity(common_sensitivity)
-#pragma declare sensitivity(foo_sensitivity, common_sensitivity)
-#pragma declare sensitivity(bar_sensitivity, common_sensitivity)
-#pragma declare capability(foo_capability)
+#pragma enclave capability(enclave_foo, foo_sensitivity)
+#pragma enclave capability(enclave_bar, bar_sensitivity)
+#pragma enclave capability(enclave_foo, foo_capability)
 */
 
 __asm__(
@@ -89,6 +89,7 @@ __asm__(
     ".set .L_common_sensitivity_name, .-.gaps.strtab\n"
     "    .string \"common_sensitivity\"\n"
     "\n"
+    "    .p2align 2\n"
     "    .section    .gaps.captab,\"\",@progbits\n"
     "    .long   0\n"
     ".set .L_foo_msg_requirements_list, (.-.gaps.captab) >> 2\n"
@@ -108,6 +109,7 @@ __asm__(
     "    .long   .L_foo_capability\n"
     "    .long   0\n"
     "\n"
+    "    .p2align 3\n"
     "    .section    .gaps.enclaves,\"\",@progbits\n"
     "    .zero   16\n"
     ".set .L_foo_enclave, (.-.gaps.enclaves) / 16\n"
@@ -121,6 +123,7 @@ __asm__(
     "    .word   .L_bar_main_symtab_index\n"
     "    .word   0\n"
     "\n"
+    "    .p2align 3\n"
     "    .section    .gaps.capabilities,\"\",@progbits\n"
     "    .zero   16\n"
     ".set .L_foo_sensitivity, (.-.gaps.capabilities) / 16\n"
@@ -140,6 +143,7 @@ __asm__(
     "    .long   0\n"
     "    .zero   4\n"
     "\n"
+    "    .p2align 2\n"
     "    .section    .gaps.symreqs,\"\",@progbits\n"
     ".set .L_bar_sub_symreq, (.-.gaps.symreqs) / 8\n"
     "    .long   .L_bar_sub_requirements_list\n"
