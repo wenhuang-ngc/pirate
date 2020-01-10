@@ -146,7 +146,7 @@ Trusted timestamp sequence of
 ```
 [Proxy Request] -> [Timestamp Request] -> [Timestamp Sign] -> [Timestamp Verify]
 ```
-is tested in a standalone application ```ts_test```.
+is tested in a standalone application ```low/ts_test```.
 
 ```ts_test.sh``` script executes the test application under different levels of
 verbosity and checks for memory leaks and errors.
