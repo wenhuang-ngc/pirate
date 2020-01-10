@@ -25,4 +25,7 @@ void ts_sign(void *ctx, const tsa_request_t *req, tsa_response_t *rsp);
 /* Verify */
 int ts_verify(const char *path, const char *ca, tsa_response_t* rsp);
 
+int ts_print_proxy_req(FILE* out, const proxy_request_t *req);
+int ts_print_tsa_req(FILE* out, const tsa_request_t *req);
+int ts_print_tsa_rsp(FILE* out, const tsa_response_t *rsp);
 #endif /* _TS_CRYPTO_H_ */

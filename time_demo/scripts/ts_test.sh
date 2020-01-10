@@ -22,6 +22,6 @@ ${OPENSSL} ts -query -config ${CONF} -cert -data ${IN} -out ${REQ}
 ${OPENSSL} ts -reply -config ${CONF} -section ${SECT} -queryfile ${REQ} -out ${TSR}
 ${OPENSSL} ts -verify -config ${CONF} -section ${SECT} -CAfile ${TSA_CA} -data ${IN} -in ${TSR}
 
-${TS_TEST_BIN} -v ${TS_TEST_BIN}
+${VALGRIND_CMD} ${TS_TEST_BIN} -vv ${TS_TEST_BIN}
 
 ${VALGRIND_CMD} ${TS_TEST_BIN} -n 10 ${TS_TEST_BIN}

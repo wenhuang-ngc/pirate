@@ -530,3 +530,87 @@ end:
 
     return ret;
 }
+
+int ts_print_proxy_req(FILE* out, const proxy_request_t *req) {
+    fprintf(out, "sha256:\n");
+    BIO_dump_indent_fp(out, (const char *)req->digest, sizeof(req->digest), 4);
+    return 0;
+}
+
+int ts_print_tsa_req(FILE* out, const tsa_request_t *req) {
+    int ret = -1;
+    char buf[512] = { 0 };
+    TS_REQ *ts_req = NULL;
+    BIO *req_bio = NULL;
+    BIO *req_bio_print = NULL;
+
+    if ((req_bio = BIO_new_mem_buf(req->req, req->len)) == NULL) {
+        goto end;
+    }
+
+    if (d2i_TS_REQ_bio(req_bio, &ts_req) == NULL) {
+        goto end;
+    }
+
+    if ((req_bio_print = BIO_new(BIO_s_mem())) == NULL) {
+        goto end;
+    }
+    
+    if (!TS_REQ_print_bio(req_bio_print, ts_req)) {
+        goto end;
+    }
+
+    if (BIO_read(req_bio_print, buf, sizeof(buf)) <= 0) {
+        goto end;
+    }
+
+    fprintf(out, "%s", buf);
+    ret = 0;
+end:
+    if (ret != 0) {
+        print_err("Failed to print TS_REQ");
+    }
+    BIO_free_all(req_bio);
+    BIO_free_all(req_bio_print);
+    TS_REQ_free(ts_req);
+    return ret;
+}
+
+int ts_print_tsa_rsp(FILE* out, const tsa_response_t *rsp) {
+    int ret = -1;
+    char buf[1024] = { 0 };
+    TS_RESP *ts_rsp = NULL;
+    BIO *rsp_bio = NULL;
+    BIO *rsp_bio_print = NULL;
+
+    if ((rsp_bio = BIO_new_mem_buf(rsp->ts, rsp->len)) == NULL) {
+        goto end;
+    }
+
+    if (d2i_TS_RESP_bio(rsp_bio, &ts_rsp) == NULL) {
+        goto end;
+    }
+
+    if ((rsp_bio_print = BIO_new(BIO_s_mem())) == NULL) {
+        goto end;
+    }
+    
+    if (!TS_RESP_print_bio(rsp_bio_print, ts_rsp)) {
+        goto end;
+    }
+
+    if (BIO_read(rsp_bio_print, buf, sizeof(buf)) <= 0) {
+        goto end;
+    }
+
+    fprintf(out, "%s", buf);
+    ret = 0;
+end:
+    if (ret != 0) {
+        print_err("Failed to print TS_RESP");
+    }
+    BIO_free_all(rsp_bio);
+    BIO_free_all(rsp_bio_print);
+    TS_RESP_free(ts_rsp);
+    return ret;
+}

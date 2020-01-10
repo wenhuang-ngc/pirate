@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <sys/signalfd.h>
 #include "common.h"
+#include "ts_crypto.h"
 
 volatile sig_atomic_t terminated = 0;
 
@@ -154,12 +155,9 @@ int gaps_running() {
 }
 
 void ts_log(log_level_t l, const char *fmt, ...) {
-    (void) l;
-    (void) fmt;
-
     FILE *stream = NULL;
     char *msg = NULL;
-    size_t len;
+    size_t len = 0;
     va_list args;
 
     struct timeval tv;
@@ -225,44 +223,23 @@ const char *ts_status_str(ts_status_t sts) {
     return ret;
 }
 
-
-#define PRINT_PREFIX    "                                  "
-#define LINE_LEN        32
-static void print_hex_str(const char *msg, const uint8_t *data, uint32_t len) {
-    static const char digits[16] = {
-        '0', '1', '2', '3', '4', '5', '6', '7',
-        '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
-    };
-    uint32_t remain = len;
-    uint32_t off = 0;
-
-    fprintf(stdout, PRINT_PREFIX"%s\n", msg);
-    do {
-        char buf[(LINE_LEN << 1) + 11];
-        char *buf_p = buf;
-        const uint32_t chunk_len = remain > LINE_LEN ? LINE_LEN : remain;
-        const uint8_t *data_p = data + off;
-
-        buf_p += sprintf(buf_p, "   %04X : ", off);
-
-        for (uint32_t i = 0; i < chunk_len; i++) {
-            *buf_p++ = digits[data_p[i] >> 4];
-            *buf_p++ = digits[data_p[i] & 0xF];
-        }
-        buf[buf_p - buf] = '\0';
-        fprintf(stdout, PRINT_PREFIX"%s\n", buf);
-        remain -= chunk_len;
-        off += chunk_len;
-    } while(remain > 0);
-}
-
 void log_proxy_req(verbosity_t v, const char* msg, const proxy_request_t *req) {
     if (v >= VERBOSITY_MIN) {
         ts_log(INFO, BCLR(CYAN, "%s"), msg);
         if (v >= VERBOSITY_MAX) {
-            fprintf(stdout, PRINT_PREFIX BCLR(CYAN, "Proxy Sign Request:\n"));
-            print_hex_str("SHA-256", req->digest, sizeof(req->digest));
-            fflush(stdout);
+            char *msg = NULL;
+            size_t len = 0;
+            FILE *stream = open_memstream(&msg, &len);
+            if (stream == NULL) {
+                ts_log(INFO, "Failed to open memory stream");
+                return;
+            }
+            fprintf(stream, "%s", CLR(CYAN, "Proxy request:\n"));
+            ts_print_proxy_req(stream, req);
+            fflush(stream);
+            fclose(stream);
+            puts(msg);
+            free(msg);
         }
     }
 }
@@ -271,30 +248,41 @@ void log_tsa_req(verbosity_t v, const char* msg, const tsa_request_t *req) {
     if (v >= VERBOSITY_MIN) {
         ts_log(INFO, BCLR(BLUE, "%s"), msg);
         if (v >= VERBOSITY_MAX) {
-            fprintf(stdout, PRINT_PREFIX BCLR(BLUE, "TS Service Request:\n"));
-            print_hex_str("REQUEST", req->req, req->len);
-            fflush(stdout);
+            char *msg = NULL;
+            size_t len = 0;
+            FILE *stream = open_memstream(&msg, &len);
+            if (stream == NULL) {
+                ts_log(INFO, "Failed to open memory stream");
+                return;
+            }
+            fprintf(stream, "%s", CLR(BLUE, "Timestamp request:\n"));
+            ts_print_tsa_req(stream, req);
+            fflush(stream);
+            fclose(stream);
+            puts(msg);
+            free(msg);
         }
     }
 }
-
 
 void log_tsa_rsp(verbosity_t v, const char* msg, const tsa_response_t* rsp) {
     if (v >= VERBOSITY_MIN) {
         ts_log(INFO, BCLR(MAGENTA, "%s : status %s"), msg, 
             ts_status_str(rsp->status));
         if (v >= VERBOSITY_MAX) {
-            fprintf(stdout, PRINT_PREFIX BCLR(MAGENTA, 
-                "Timestamp Sign Response:\n"));
-            fprintf(stdout, PRINT_PREFIX"STATUS: %s\n",
-                ts_status_str(rsp->status));
-            if (rsp->status == OK) {
-                fprintf(stdout, PRINT_PREFIX"LENGTH: %u\n", rsp->len);
-                if ((rsp->len != 0) && (rsp->len <= MAX_TS_LEN)) {
-                    print_hex_str("TS", rsp->ts, rsp->len);
-                }
+            char *msg = NULL;
+            size_t len = 0;
+            FILE *stream = open_memstream(&msg, &len);
+            if (stream == NULL) {
+                ts_log(INFO, "Failed to open memory stream");
+                return;
             }
-            fflush(stdout);
+            fprintf(stream, "%s", CLR(MAGENTA, "Timestamp response:\n"));
+            ts_print_tsa_rsp(stream, rsp);
+            fflush(stream);
+            fclose(stream);
+            puts(msg);
+            free(msg);
         }
     }
 }
