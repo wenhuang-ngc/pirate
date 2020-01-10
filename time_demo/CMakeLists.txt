@@ -15,7 +15,7 @@ set(CMAKE_C_COMPILER "clang")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEMO_VERSION='\"${VERSION}\"' -g")
 set(BUILD_FLAGS "-Werror" "-Wall" "-Wextra" "-Wpedantic")
 set(PIRATE_LIB "pirateprims-static")
-set(COMMON_SRC 
+set(COMMON_SRC
     "${PROJECT_SOURCE_DIR}/src/gaps_packet.c"
     "${PROJECT_SOURCE_DIR}/src/common.c"
     "${PROJECT_SOURCE_DIR}/src/ts_crypto.c"
@@ -30,9 +30,9 @@ function(add_gaps_target TGT LVL)
     target_link_libraries(${TGT} ${PIRATE_LIB} ${OPENSSL_LIBRARIES} "pthread")
     target_compile_options(${TGT} PRIVATE ${BUILD_FLAGS})
     set_target_properties(
-        ${TGT} 
-        PROPERTIES 
-        RUNTIME_OUTPUT_DIRECTORY 
+        ${TGT}
+        PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY
         "${PROJECT_BINARY_DIR}/${LVL}"
     )
 endfunction()
@@ -49,13 +49,9 @@ add_gaps_target(${SIGNING_SERVICE_NAME} ${LEVEL_LOW})
 set(CONF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/conf)
 set(CONF_CA ${CONF_DIR}/tsa_ca.conf)
 set(CONF_TSA ${CONF_DIR}/tsa.conf)
-set(PKI_DIR_HIGH ${PROJECT_BINARY_DIR}/${LEVEL_HIGH}/pki)
-set(PKI_DIR_HIGH_PRIV ${PKI_DIR_HIGH}/priv)
 set(PKI_DIR_LOW ${PROJECT_BINARY_DIR}/${LEVEL_LOW}/pki)
 set(PKI_DIR_LOW_PRIV ${PKI_DIR_LOW}/priv)
 file(MAKE_DIRECTORY 
-    ${PKI_DIR_HIGH} 
-    ${PKI_DIR_HIGH_PRIV} 
     ${PKI_DIR_LOW}
     ${PKI_DIR_LOW_PRIV}
 )
