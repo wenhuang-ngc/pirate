@@ -60,7 +60,7 @@ typedef enum {
     VERBOSITY_NONE = 0,
     VERBOSITY_MIN  = 1,
     VERBOSITY_MAX  = 2
-} verbosity_level_t;
+} verbosity_t;
 
 /* GAPS channel type used for the demo */
 #define GAPS_CH_TYPE PIPE
@@ -90,8 +90,27 @@ typedef struct {
 } tsa_response_t;
 #define TSA_RESPONSE_INIT { .status = UNKNOWN, .len = 0, .ts = { 0 } }
 
-void print_proxy_request(const proxy_request_t *req);
-void print_tsa_request(const tsa_request_t *req);
-void print_tsa_response(const tsa_response_t* rsp);
+
+#define _BLACK       "30"
+#define _RED         "31"
+#define _GREEN       "32"
+#define _YELLOW      "33"
+#define _BLUE        "34"
+#define _MAGENTA     "35"
+#define _CYAN        "36"
+#define _WHITE       "37"
+#define CLR(C, str)  "\x1b["_##C"m" str "\x1b[0m"
+#define BCLR(C, str) "\033[1m\033["_##C"m" str "\x1b[0m"
+
+typedef enum {
+    INFO,
+    WARN,
+    ERROR
+} log_level_t;
+
+void ts_log(log_level_t l, const char *fmt, ...);
+void log_proxy_req(verbosity_t v, const char* msg, const proxy_request_t *req);
+void log_tsa_req(verbosity_t v, const char* msg, const tsa_request_t *req);
+void log_tsa_rsp(verbosity_t v, const char* msg, const tsa_response_t* rsp);
 
 #endif /* _COMMON_H_ */

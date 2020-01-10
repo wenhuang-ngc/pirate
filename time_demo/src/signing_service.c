@@ -6,7 +6,7 @@
 #include "ts_crypto.h"
 
 typedef struct {
-    verbosity_level_t verbosity;
+    verbosity_t verbosity;
 
     struct {
         const char *conf_file;
@@ -82,19 +82,12 @@ static void *signer_thread(void *arg) {
         len = gaps_packet_read(proxy_rd->fd, &req, sizeof(req));
         if (len != sizeof(req)) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to receive sign request\n");
+                ts_log(ERROR, "Failed to receive sign request");
                 gaps_terminate();
             }
             continue;
         }
-
-        if (signer->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "TSA request received\n");
-            if (signer->verbosity >= VERBOSITY_MAX) {
-                print_tsa_request(&req);
-            }
-            fflush(stdout);
-        }
+        log_tsa_req(signer->verbosity, "Timestamp request received", &req);
 
         /* Sign with a timestamp */
         ts_sign(signer->ts.tsa, &req, &rsp);
@@ -102,19 +95,12 @@ static void *signer_thread(void *arg) {
         /* Reply */
         if (gaps_packet_write(proxy_wr->fd, &rsp, sizeof(rsp)) != 0) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to send sign response\n");
+                ts_log(ERROR, "Failed to send sign response");
                 gaps_terminate();
             }
             continue;
         }
-
-        if (signer->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "TSA response sent\n");
-            if (signer->verbosity >= VERBOSITY_MAX) {
-                print_tsa_response(&rsp);
-            }
-            fflush(stdout);
-        }
+        log_tsa_rsp(signer->verbosity, "Timestamp response sent", &rsp);
     }
 
     return 0;  /* Should never get here */
@@ -156,13 +142,13 @@ int main(int argc, char *argv[]) {
     /* Initialize signer crypto resources */
     signer.ts.tsa = ts_init(signer.ts.conf_file, signer.ts.conf_sect);
     if (signer.ts.tsa == NULL) {
-        fprintf(stderr, "Failed to initialize timestamp context\n");
+        ts_log(ERROR, "Failed to initialize timestamp context");
         return -1;
     }
 
     /* Run the signer */
     if (gaps_app_run(&signer.app) != 0) {
-        fprintf(stderr, "Failed to start the signing proxy\n");
+        ts_log(ERROR, "Failed to start the signing proxy");
         signer_term(&signer);
         return -1;
     }

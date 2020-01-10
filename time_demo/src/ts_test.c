@@ -15,7 +15,7 @@ typedef struct {
     const char *conf_sect;
     const char *ca_path;
     uint32_t loops;
-    verbosity_level_t verbosity;
+    verbosity_t verbosity;
 
     void *ts_ctx;
 } ts_test_t;
@@ -97,49 +97,29 @@ static int ts_req_sign_verify(ts_test_t *ts_test, const char* path) {
 
     /* Create digest */
     if (ts_create_request(path, &proxy_req) != 0) {
-        fprintf(stderr, "Failed to create data digest\n");
+        ts_log(ERROR, "Failed to create data digest");
         return -1;
     }
-
-    if (ts_test->verbosity >=  VERBOSITY_MIN) {
-        fprintf(stdout, "Proxy request generated\n");
-        print_proxy_request(&proxy_req);
-        fflush(stdout);
-    }
+    log_proxy_req(ts_test->verbosity, "Proxy request generated", &proxy_req);
     
     /* Create query */
     if (ts_create_query(&proxy_req, &tsa_req) != 0) {
-        fprintf(stderr, "Failed to create query\n");
+        ts_log(ERROR, "Failed to create query");
         return -1;
     }
-
-    if (ts_test->verbosity >=  VERBOSITY_MIN) {
-        fprintf(stdout, "Timestamp sign request\n");
-        if (ts_test->verbosity >=  VERBOSITY_MAX) {
-            print_tsa_request(&tsa_req);
-        }
-        fflush(stdout);
-    }
+    log_tsa_req(ts_test->verbosity, "Timestamp request generated", &tsa_req);
 
     /* Create TS response */
     ts_sign(ts_test->ts_ctx, &tsa_req, &tsa_rsp);
     if (tsa_rsp.status != OK) {
-        fprintf(stderr, "Failed to generate response\n");
+        ts_log(ERROR, "Failed to generate response");
         return -1;
     }
-
-    if (ts_test->verbosity >=  VERBOSITY_MIN) {
-        fprintf(stdout, "Timestamp sign response: STATUS = %s\n", 
-            ts_status_str(tsa_rsp.status));
-        if (ts_test->verbosity >=  VERBOSITY_MAX) {
-            print_tsa_response(&tsa_rsp);
-        }
-        fflush(stdout);   
-    }
+    log_tsa_rsp(ts_test->verbosity, "Timestamp sign response", &tsa_rsp);
 
     /* Verify */
     if (ts_verify(path, ts_test->ca_path, &tsa_rsp) != 0) {
-        fprintf(stderr, "Failed to verify response\n");
+        ts_log(ERROR, "Failed to verify response");
         return -1;
     }
 
@@ -151,7 +131,7 @@ static int ts_test_run(ts_test_t *ts_test) {
     for (uint32_t l = 0; l < ts_test->loops; l++) {
         for (uint32_t i = 0; i < ts_test->input_count; i++) {
             if (ts_req_sign_verify(ts_test, ts_test->inputs[i]) != 0) {
-                fprintf(stderr, "FAIL: Loop %d, Input %d\n", l, i);
+                ts_log(ERROR, "FAIL: Loop %d, Input %d", l, i);
                 return -1;
             }
         }
@@ -167,13 +147,13 @@ int main(int argc, char *argv[]) {
     /* Initialize the timestamp test */
     ts_test_g.ts_ctx = ts_init(ts_test_g.conf_path, ts_test_g.conf_sect);
     if (ts_test_g.ts_ctx == 0) {
-        fprintf(stderr, "Failed to initialize the timestamp test\n");
+        ts_log(ERROR, "Failed to initialize the timestamp test");
         return -1;
     }
 
     /* Run the timestamp test */
     if (ts_test_run(&ts_test_g) != 0) {
-        fprintf(stderr, "Failed to execute timestamp test\n");
+        ts_log(ERROR, "Failed to execute timestamp test");
         ts_term(ts_test_g.ts_ctx);
         return -1;
     }

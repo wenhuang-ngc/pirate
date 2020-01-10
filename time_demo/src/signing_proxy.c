@@ -28,7 +28,7 @@ typedef struct {
 typedef struct {
     uint32_t poll_period_ms;
     uint32_t queue_len;
-    verbosity_level_t verbosity;
+    verbosity_t verbosity;
 
     gaps_app_t app;
 
@@ -118,7 +118,7 @@ static int request_queue_init(request_queue_t *queue, uint32_t num) {
         proxy_request_entry_t *entry = (proxy_request_entry_t*)
             calloc(1, sizeof(proxy_request_entry_t));
         if (entry == NULL) {
-            perror("Failed to allocate memory for a signing request\n");
+            ts_log(ERROR, "Failed to allocate memory for a signing request");
             return -1;
         }
 
@@ -142,7 +142,7 @@ static int queues_init(proxy_t *proxy) {
     /* Initialize request queues */
     if ((request_queue_init(&proxy->queue.free, proxy->queue_len) != 0) ||
         (request_queue_init(&proxy->queue.req, 0) != 0)) {
-        fprintf(stderr, "Failed to initialize request queues\n");
+        ts_log(ERROR, "Failed to initialize request queues");
         return -1;
     }
 
@@ -155,7 +155,6 @@ static void queues_term(proxy_t *proxy) {
     request_queue_term(&proxy->queue.free);
     request_queue_term(&proxy->queue.req);
 }
-
 
 /* Thread for generating simulated requests */
 static void *sim_request_gen(void *argp) {
@@ -182,27 +181,20 @@ static void *sim_request_gen(void *argp) {
 
         /* Generate simulated request and place it on the request queue */
         if ((entry = request_queue_pop(&proxy->queue.free)) == NULL) {
-            fprintf(stderr, "Failed to pop a request entry\n");
+            ts_log(ERROR, "Failed to pop a request entry");
             gaps_terminate();
             continue;
         }
 
         if (ts_create_request(NULL, &entry->req) != 0) {
-            perror("Failed to generate random request data\n");
+            ts_log(ERROR, "Failed to generate random request data");
             gaps_terminate();
             continue;
         }
 
         entry->simulated = 1;
         request_queue_push(&proxy->queue.req, entry);
-
-        if (proxy->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "Simulated request added\n");
-            if (proxy->verbosity >= VERBOSITY_MAX) {
-                print_proxy_request(&entry->req);
-            }
-            fflush(stdout);
-        }
+        log_proxy_req(proxy->verbosity, "Simulated request added", &entry->req);
     }
 
     return NULL;
@@ -221,18 +213,13 @@ static void *request_receive(void *argp) {
         len = gaps_packet_read(client_rd->fd, &req, sizeof(req));
         if (len != sizeof(req)) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to receive request\n");
+                ts_log(ERROR, "Failed to receive request");
                 gaps_terminate();
             }
             continue;
         }
 
-        if (proxy->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "Client request received\n");
-            if (proxy->verbosity >= VERBOSITY_MAX) {
-                print_proxy_request(&req);
-            }
-        }
+        log_proxy_req(proxy->verbosity, "Client request received", &req);
 
         if ((entry = request_queue_pop(&proxy->queue.free)) == NULL) {
             tsa_response_t rsp = {
@@ -243,15 +230,14 @@ static void *request_receive(void *argp) {
 
             if (gaps_packet_write(PROXY_TO_CLIENT, &rsp, sizeof(rsp)) != 0) {
                 if (gaps_running()) {
-                    fprintf(stderr, "Failed to send busy response\n");
+                    ts_log(ERROR, "Failed to send busy response");
                     gaps_terminate();
                 }
                 continue;
             }
 
             if (proxy->verbosity >= VERBOSITY_MIN) {
-                fprintf(stdout, "BUSY\n");
-                fflush(stdout);
+                ts_log(INFO, "BUSY");
             }
         }
 
@@ -288,39 +274,25 @@ static void *proxy_thread(void *arg) {
 
         /* Get a request, there always should be one */
         if ((entry = request_queue_pop(&proxy->queue.req)) == NULL) {
-            fprintf(stderr, "Request queue empty\n");
+            ts_log(ERROR, "Request queue empty");
             gaps_terminate();
             continue;
         }
-
-        if (proxy->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "Processing next request\n");
-            if (proxy->verbosity >= VERBOSITY_MAX) {
-                print_proxy_request(&entry->req);
-            }
-            fflush(stdout);
-        }
+        log_proxy_req(proxy->verbosity, "Processing next request", &entry->req);
         
         /* Use the timestamp service to sign */
         if (ts_create_query(&entry->req, &req) != 0) {
-            fprintf(stderr, "Failed to generate timestamp sign query\n");
+            ts_log(ERROR, "Failed to generate timestamp sign query");
             gaps_terminate();
             continue;
         }
-
-        if (proxy->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "TSA request sent\n");
-            if (proxy->verbosity >= VERBOSITY_MAX) {
-                print_tsa_request(&req);
-            }
-            fflush(stdout);
-        }
+        log_tsa_req(proxy->verbosity, "Timestamp request sent", &req);
 
         request_queue_push(&proxy->queue.free, entry);
         sts = gaps_packet_write(signer_wr->fd, &req, sizeof(req));
         if (sts != 0) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to send timestamp request\n");
+                ts_log(ERROR, "Failed to send timestamp request");
                 gaps_terminate();
             }
             continue;
@@ -329,20 +301,13 @@ static void *proxy_thread(void *arg) {
         len = gaps_packet_read(signer_rd->fd, &rsp, sizeof(rsp));
         if (len != sizeof(rsp)) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to receive timestamp response\n");
+                ts_log(ERROR, "Failed to receive timestamp response");
                 gaps_terminate();
             }
             continue;
         }
-        
-        if (proxy->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "TSA response received: STATUS = %s\n", 
-                ts_status_str(rsp.status));
-            if (proxy->verbosity >= VERBOSITY_MAX) {
-                print_tsa_response(&rsp);
-            }
-        }
-
+        log_tsa_rsp(proxy->verbosity, "Timestamp response received", &rsp);
+    
         if (entry->simulated != 0) {
             continue;
         }
@@ -350,11 +315,14 @@ static void *proxy_thread(void *arg) {
         sts = gaps_packet_write(client_wr->fd, &rsp, sizeof(rsp));
         if (sts != 0) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to send response\n");
+                ts_log(ERROR, "Failed to send response");
                 gaps_terminate();
             }
             continue;
         }
+
+        log_tsa_rsp(proxy->verbosity, "Timestamp response sent to client", 
+            &rsp);
     }
 
     return NULL;
@@ -387,12 +355,12 @@ int main(int argc, char *argv[]) {
     parse_args(argc, argv, &proxy);
 
     if (queues_init(&proxy) != 0) {
-        fprintf(stderr, "Failed to initialize proxy queues\n");
+        ts_log(ERROR, "Failed to initialize proxy queues");
         return -1;
     }
 
     if (gaps_app_run(&proxy.app) != 0) {
-        fprintf(stderr, "Failed to start the signing proxy\n");
+        ts_log(ERROR, "Failed to start the signing proxy");
         return -1;
     }
 

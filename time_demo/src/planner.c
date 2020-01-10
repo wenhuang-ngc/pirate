@@ -21,7 +21,7 @@ typedef struct {
 } client_data_t;
 
 typedef struct {
-    verbosity_level_t verbosity;
+    verbosity_t verbosity;
     uint32_t validate;
     uint32_t request_delay_ms;
     const char *ca_path;
@@ -142,19 +142,18 @@ static int save_ts_response(const char *in_path, const char *out_dir,
         out_dir, idx, in_file);
 
     if ((f_out = fopen(out_path, "wb")) == NULL) {
-        perror("Failed to open TSR output file\n");
+        ts_log(ERROR, "Failed to open TSR output file");
         return -1;
     }
 
     if (fwrite(rsp->ts, rsp->len, 1, f_out) != 1) {
-        perror("Failed to open TSR content\n");
+        ts_log(ERROR, "Failed to open TSR content");
         rv = -1;
     }
 
     fclose(f_out);
     return rv;
 }
-
 
 /* Acquire trusted timestamps */
 static void *client_thread(void *arg) {
@@ -180,7 +179,7 @@ static void *client_thread(void *arg) {
 
         /* Compose a request */
         if (ts_create_request(d->path, &req) != 0) {
-            fprintf(stderr, "Failed to generate TS request\n");
+            ts_log(ERROR, "Failed to generate TS request");
             gaps_terminate();
             continue;
         }
@@ -189,54 +188,37 @@ static void *client_thread(void *arg) {
         int sts = gaps_packet_write(proxy_wr->fd, &req, sizeof(req));
         if (sts == -1) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to send signing request to proxy\n");
+                ts_log(ERROR, "Failed to send signing request to proxy");
                 gaps_terminate();
             }
             continue;
         }
-
-        if (client->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "\nRequest sent to proxy\n");
-            if (client->verbosity >= VERBOSITY_MAX) {
-                print_proxy_request(&req);
-                fprintf(stdout, "%7s : %s\n", "PATH", d->path);
-                fprintf(stdout, "%7s : %u\n\n", "LENGTH", d->len);
-            }
-            fflush(stdout);
-        }
+        log_proxy_req(client->verbosity, "Request sent to proxy", &req);
 
         /* Get response */
         sts = gaps_packet_read(proxy_rd->fd, &rsp, sizeof(rsp));
         if (sts != sizeof(rsp)) {
             if (gaps_running()) {
-                fprintf(stderr, "Failed to receive response\n");
+                ts_log(ERROR, "Failed to receive response");
                 gaps_terminate();
             }
             continue;
         }
-
-        if (client->verbosity >= VERBOSITY_MIN) {
-            fprintf(stdout, "TSA response received: STATUS = %s\n", 
-                ts_status_str(rsp.status));
-            if (client->verbosity >= VERBOSITY_MAX) {
-                print_tsa_response(&rsp);
-            }
-            fflush(stdout);
-        }
+        log_tsa_rsp(client->verbosity, "Timestamp response received", &rsp);
 
         /* Optionally validate the signature */
         if (client->validate != 0) {
             if (ts_verify(d->path, client->ca_path, &rsp) == 0) {
-                fprintf(stdout, "Timestamp VALIDATED\n");
+                ts_log(INFO, BCLR(GREEN, "Timestamp VERIFIED"));
             } else {
-                fprintf(stdout, "FAILED to validate the timestamp\n");
+                ts_log(WARN, BCLR(RED, "FAILED to validate the timestamp"));
             }
             fflush(stdout);
         }
 
         /* Optionally save the timestamp signature */
         if (save_ts_response(d->path, client->tsr_dir, idx, &rsp) != 0) {
-            fprintf(stderr, "Failed to save timestamp response\n");
+            ts_log(ERROR, "Failed to save timestamp response");
             gaps_terminate();
             continue;
         }
@@ -274,7 +256,7 @@ int main(int argc, char *argv[]) {
     parse_args(argc, argv, &client);
 
     if (gaps_app_run(&client.app) != 0) {
-        fprintf(stderr, "Failed to initialize the timestamp client\n");
+        ts_log(ERROR, "Failed to initialize the timestamp client");
         return -1;
     }
 
