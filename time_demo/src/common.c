@@ -37,6 +37,21 @@ static void siguser_handler(int signo) {
     (void)signo;
 }
 
+int get_executable_path(char *exec_path) {
+    char *sep;
+    if (readlink("/proc/self/exe", exec_path, MAX_PATH_LEN) < 0) {
+        ts_log(ERROR, "Failed to read /proc/self/exe");
+        return -1;
+    }
+    sep = strrchr(exec_path, '/');
+    if (!sep) {
+        ts_log(ERROR, "Failed to locate trailing slash");
+        return -1;
+    }
+    *sep = '\0';
+    return 0;
+}
+
 int gaps_app_run(gaps_app_t *ctx) {
     sigset_t mask;
     struct sigaction saction;

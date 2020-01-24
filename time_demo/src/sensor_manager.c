@@ -16,6 +16,8 @@
 #include <argp.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "gaps_packet.h"
 #include "ts_crypto.h"
@@ -252,12 +254,22 @@ static void *client_thread(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
+    char exec_path[MAX_PATH_LEN];
+    char ca_path[MAX_PATH_LEN];
+    char tsr_dir[MAX_PATH_LEN];
+
+    if (get_executable_path(exec_path)) {
+        return -1;
+    }
+    snprintf(ca_path, sizeof(ca_path), "%s/%s", exec_path, DEFAULT_CA_PATH);
+    snprintf(tsr_dir, sizeof(tsr_dir), "%s/%s", exec_path, DEFAULT_TSR_OUT_DIR);
+
     client_t client = {
         .verbosity = VERBOSITY_NONE,
         .validate = 0,
         .request_delay_ms = 0,
-        .ca_path = DEFAULT_CA_PATH,
-        .tsr_dir = DEFAULT_TSR_OUT_DIR,
+        .ca_path = ca_path,
+        .tsr_dir = tsr_dir,
 
         .app = {
             .threads = {

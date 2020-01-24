@@ -16,6 +16,7 @@
 #include <argp.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include "gaps_packet.h"
 #include "common.h"
 #include "ts_crypto.h"
@@ -127,11 +128,20 @@ static void signer_term(signer_t *signer) {
 
 
 int main(int argc, char *argv[]) {
+    char exec_path[MAX_PATH_LEN];
+    char conf_path[MAX_PATH_LEN];
+    char prev_cwd[MAX_PATH_LEN];
+
+    if (get_executable_path(exec_path)) {
+        return -1;
+    }
+    snprintf(conf_path, sizeof(conf_path), "%s/%s", exec_path, DEFAULT_CONF_PATH);
+
     signer_t signer = {
         .verbosity = VERBOSITY_NONE,
         
         .ts = {
-            .conf_file = DEFAULT_CONF_PATH,
+            .conf_file = conf_path,
             .conf_sect = DEFAULT_CONF_SECTION
         },
 
@@ -161,9 +171,21 @@ int main(int argc, char *argv[]) {
     parse_args(argc, argv, &signer);
 
     /* Initialize signer crypto resources */
+    if (!getcwd(prev_cwd, sizeof(prev_cwd))) {
+        ts_log(ERROR, "Failed to get current working directory");
+        return -1;
+    }
+    if (chdir(exec_path)) {
+        ts_log(ERROR, "Failed to set current working directory");
+        return -1;
+    }
     signer.ts.tsa = ts_init(signer.ts.conf_file, signer.ts.conf_sect);
     if (signer.ts.tsa == NULL) {
         ts_log(ERROR, "Failed to initialize timestamp context");
+        return -1;
+    }
+    if (chdir(prev_cwd)) {
+        ts_log(ERROR, "Failed to restore current working directory");
         return -1;
     }
 

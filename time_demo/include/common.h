@@ -95,6 +95,7 @@ typedef enum {
 #define NONCE_LENGTH    8
 #define MAX_REQ_LEN     128
 #define MAX_TS_LEN      (8 << 10)
+#define MAX_PATH_LEN    128
 
 /* Structure passed from the client to the proxy */
 typedef struct {
@@ -139,5 +140,8 @@ void ts_log(log_level_t l, const char *fmt, ...);
 void log_proxy_req(verbosity_t v, const char* msg, const proxy_request_t *req);
 void log_tsa_req(verbosity_t v, const char* msg, const tsa_request_t *req);
 void log_tsa_rsp(verbosity_t v, const char* msg, const tsa_response_t* rsp);
+
+// assumes MAX_PATH_LEN bytes have been allocated for exec_path
+int get_executable_path(char *exec_path);
 
 #endif /* _COMMON_H_ */
