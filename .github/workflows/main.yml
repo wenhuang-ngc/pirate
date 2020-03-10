@@ -112,6 +112,18 @@ jobs:
         cd build
         cmake -DCMAKE_C_COMPILER="gcc" -DGAPS_DEMOS=ON -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON ..
         make
+  kernel-module:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+    - name: install kernel module
+      run: |
+        cd devices/uio-device
+        make clean
+        make
+        sudo modprobe uio
+        sudo insmod uio-gaps.ko
+        sudo chmod 0666 /dev/uio0
   gaps:
     runs-on: ubuntu-latest
     container: docker://pirateteam/llvm-ubuntu:latest
