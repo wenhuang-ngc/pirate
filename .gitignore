@@ -19,4 +19,5 @@ devices/cusegaps/cusegaps_pipe
 devices/cusegaps/cusegaps_test
 .vscode
 .project
+clang_format.patch
 /build/*
