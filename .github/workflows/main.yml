@@ -96,6 +96,7 @@ jobs:
         cmake --build . --target install
     - name: build Mercury loopback
       run: |
+        uname -a
         cd devices/mercury/loopback_ilip
         make
         sudo insmod gaps_ilip.ko
