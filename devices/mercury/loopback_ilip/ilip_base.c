@@ -1022,7 +1022,9 @@ static void gaps_ilip_copy( struct work_struct *work )
     unsigned int read_driver_index;
     unsigned int read_driver_index_save;
     u64 t;
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0) && LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+    struct timespec64 ts64;
+#endif
     /* Cannot be NULL */
     if ( work == NULL ) {
         printk( KERN_WARNING "gaps_ilip_copy( ) work pointer invalid\n" );
@@ -1034,7 +1036,6 @@ static void gaps_ilip_copy( struct work_struct *work )
     /* Ubuntu 19.10 API change */
     t = ktime_get_boottime_ns();
     #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
-    struct timespec64 ts64;
     ktime_get_boottime_ts64(&ts64);
     t = ts64.tv_sec * 1000000000 + ts64.tv_nsec;
     #else
